@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -71,8 +73,11 @@ func (s *Server) SetGoogleOAuthConfig(clientID, clientSecret, redirectURI string
 
 // setupRoutes configures the server routes
 func (s *Server) setupRoutes() {
-	// Add the route for the specified path
-	s.Router.GET(s.Path, s.unauthorizedHandler)
+	// Only add the unauthorized handler if the path is not one of our special endpoints
+	if s.Path != "/sse" {
+		// Add the route for the specified path
+		s.Router.GET(s.Path, s.unauthorizedHandler)
+	}
 	
 	// Add a health check endpoint
 	s.Router.GET("/health", s.healthCheckHandler)
@@ -93,7 +98,7 @@ func (s *Server) setupRoutes() {
 	s.Router.POST("/token", s.tokenHandler)
 	
 	// Add SSE endpoint
-	s.Router.GET("/events", s.sseHandler)
+	s.Router.GET("/sse", s.sseHandler)
 }
 
 // unauthorizedHandler returns a 401 Unauthorized response
@@ -311,14 +316,17 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	}
 	
 	// Exchange the authorization code for tokens
-	accessToken, idToken, err := s.GoogleProvider.ExchangeToken(code)
+	accessToken, idToken, err := s.GoogleProvider.ExchangeToken(code, sessionData.CodeVerifier)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to exchange token")
 		c.JSON(500, gin.H{"error": "server_error"})
 		return
 	}
-	
-	log.Debug().Msg("Received tokens from Google")
+
+	log.Debug().
+		Str("access_token_length", fmt.Sprintf("%d", len(accessToken))).
+		Str("id_token_length", fmt.Sprintf("%d", len(idToken))).
+		Msg("Tokens received from provider")
 	
 	// Store tokens in session
 	sessionData.AccessToken = accessToken
@@ -413,8 +421,13 @@ func (s *Server) tokenHandler(c *gin.Context) {
 		})
 		return
 	}
-	
-	log.Debug().Str("code", code).Msg("Found session for code")
+
+	log.Debug().
+		Str("code", code).
+		Bool("access_token_empty", sessionData.AccessToken == "").
+		Bool("id_token_empty", sessionData.IDToken == "").
+		Time("expires_at", sessionData.ExpiresAt).
+		Msg("Session data for token request")
 	
 	// Return the tokens
 	c.JSON(200, gin.H{
@@ -428,34 +441,63 @@ func (s *Server) tokenHandler(c *gin.Context) {
 	delete(s.Sessions, code)
 }
 
-// sseHandler handles Server-Sent Events connections
+// sseHandler handles Server-Sent Events connections and proxies events from the remote server
 func (s *Server) sseHandler(c *gin.Context) {
-	// Get the authorization header
+	log.Info().Str("path", c.Request.URL.Path).Msg("Received SSE request")
+	
+	// Get the authorization header or query parameter
 	authHeader := c.GetHeader("Authorization")
+	tokenParam := c.Query("access_token")
+	
+	log.Debug().
+		Str("auth_header", authHeader).
+		Str("token_param", tokenParam).
+		Msg("Authorization received")
+	
+	var token string
 	
 	// Check if the authorization header is present and has the correct format
-	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+		log.Debug().Str("token_source", "header").Msg("Using token from Authorization header")
+	} else if tokenParam != "" {
+		token = tokenParam
+		log.Debug().Str("token_source", "query").Msg("Using token from query parameter")
+	} else {
+		log.Warn().Msg("Missing or invalid authorization")
 		c.Header("WWW-Authenticate", "Bearer realm=\"mcpauth\"")
 		c.JSON(401, gin.H{
 			"error": "unauthorized",
-			"error_description": "Missing or invalid authorization header",
+			"error_description": "Missing or invalid authorization",
 		})
 		return
 	}
 	
-	// Extract the token
-	token := strings.TrimPrefix(authHeader, "Bearer ")
+	log.Debug().Str("token", token[:min(10, len(token))]+"...").Msg("Extracted token")
 	
 	// Validate the token (simple check for now - just see if it exists in any session)
 	var validToken bool
-	for _, session := range s.Sessions {
+	var matchedSession string
+	
+	// Log all sessions for debugging
+	log.Debug().Int("session_count", len(s.Sessions)).Msg("Checking sessions")
+	for key, session := range s.Sessions {
+		// Only log part of the token for security
+		tokenPrefix := ""
+		if session.AccessToken != "" && len(session.AccessToken) > 10 {
+			tokenPrefix = session.AccessToken[:10] + "..."
+		}
+		log.Debug().Str("session_key", key).Str("session_token_prefix", tokenPrefix).Msg("Session details")
+		
 		if session.AccessToken == token {
 			validToken = true
+			matchedSession = key
 			break
 		}
 	}
 	
 	if !validToken {
+		log.Warn().Str("token_prefix", token[:min(10, len(token))]+"...").Msg("Invalid token - not found in any session")
 		c.Header("WWW-Authenticate", "Bearer realm=\"mcpauth\"")
 		c.JSON(401, gin.H{
 			"error": "unauthorized",
@@ -464,26 +506,215 @@ func (s *Server) sseHandler(c *gin.Context) {
 		return
 	}
 	
+	log.Info().Str("session_key", matchedSession).Msg("Token validated successfully")
+	
 	// Set headers for SSE
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("Transfer-Encoding", "chunked")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	log.Debug().Interface("response_headers", c.Writer.Header()).Msg("Set SSE headers on response")
 	
 	// Create a channel for client disconnection
 	clientGone := c.Writer.CloseNotify()
 	
-	// Keep the connection open
+	// Connect to the remote SSE server
+	remoteURL := "https://test-sse.vercel.app/api/sse"
+	log.Info().Str("remote_url", remoteURL).Msg("Connecting to remote SSE server")
+	
+	req, err := http.NewRequest("GET", remoteURL, nil)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create request to remote SSE server")
+		c.JSON(500, gin.H{"error": "server_error"})
+		return
+	}
+	
+	// Create a client with a longer timeout
+	client := &http.Client{
+		Timeout: 0, // No timeout for SSE connections
+	}
+	
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to connect to remote SSE server")
+		c.JSON(500, gin.H{"error": "server_error"})
+		return
+	}
+	defer resp.Body.Close()
+	
+	// Check if the response is successful
+	if resp.StatusCode != http.StatusOK {
+		log.Error().Int("status_code", resp.StatusCode).Msg("Remote SSE server returned error")
+		c.JSON(resp.StatusCode, gin.H{"error": "server_error"})
+		return
+	}
+	
+	log.Info().Msg("Connected to remote SSE server, proxying events")
+	
+	// Send a welcome message
+	c.Writer.Write([]byte("data: {\"type\":\"connection\",\"message\":\"Connected to SSE server via proxy\"}\n\n"))
+	c.Writer.Flush()
+	
+	// Create a buffer for reading from the remote server
+	reader := bufio.NewReader(resp.Body)
+	
+	// Proxy events from the remote server to the client
 	for {
 		select {
 		case <-clientGone:
 			log.Debug().Msg("Client disconnected from SSE")
 			return
 		default:
-			// Send a heartbeat event every 15 seconds
-			c.SSEvent("heartbeat", gin.H{"time": time.Now().Unix()})
-			c.Writer.Flush()
-			time.Sleep(15 * time.Second)
+			// Read a line from the remote server
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err == io.EOF {
+					log.Info().Msg("Remote SSE server closed connection")
+				} else {
+					log.Error().Err(err).Msg("Error reading from remote SSE server")
+				}
+				return
+			}
+			
+			// Write the line to the client
+			_, err = c.Writer.Write([]byte(line))
+			if err != nil {
+				log.Error().Err(err).Msg("Error writing to client")
+				return
+			}
+			
+			// If the line is empty (end of event), flush the response
+			if line == "\n" {
+				c.Writer.Flush()
+			}
 		}
 	}
+}
+
+// messageHandler processes messages sent from the client and forwards them to the remote server
+func (s *Server) messageHandler(c *gin.Context) {
+	log.Info().Str("path", c.Request.URL.Path).Msg("Received message from client")
+	
+	// Set CORS headers
+	origin := c.Request.Header.Get("Origin")
+	if origin == "" {
+		origin = "*"
+	}
+	c.Header("Access-Control-Allow-Origin", origin)
+	c.Header("Access-Control-Allow-Methods", "POST, OPTIONS")
+	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+	c.Header("Access-Control-Allow-Credentials", "true")
+	
+	// Get the authorization header
+	authHeader := c.GetHeader("Authorization")
+	var token string
+	
+	// Check if the authorization header is present and has the correct format
+	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+	} else {
+		log.Warn().Msg("Missing or invalid authorization")
+		c.Header("WWW-Authenticate", "Bearer realm=\"mcpauth\"")
+		c.JSON(401, gin.H{
+			"error": "unauthorized",
+			"error_description": "Missing or invalid authorization",
+		})
+		return
+	}
+	
+	// Validate the token (simple check for now - just see if it exists in any session)
+	var validToken bool
+	
+	for _, session := range s.Sessions {
+		if session.AccessToken == token {
+			validToken = true
+			break
+		}
+	}
+	
+	if !validToken {
+		log.Warn().Str("token_prefix", token[:min(10, len(token))]+"...").Msg("Invalid token")
+		c.Header("WWW-Authenticate", "Bearer realm=\"mcpauth\"")
+		c.JSON(401, gin.H{
+			"error": "unauthorized",
+			"error_description": "Invalid token",
+		})
+		return
+	}
+	
+	// Parse the message from the request body
+	var messageRequest struct {
+		Message string `json:"message"`
+	}
+	
+	if err := c.ShouldBindJSON(&messageRequest); err != nil {
+		log.Error().Err(err).Msg("Failed to parse message request")
+		c.JSON(400, gin.H{
+			"error": "invalid_request",
+			"error_description": "Invalid message format",
+		})
+		return
+	}
+	
+	log.Info().Str("message", messageRequest.Message).Msg("Received message")
+	
+	// Forward the message to the remote server
+	remoteURL := "https://test-sse.vercel.app/api/message"
+	log.Info().Str("remote_url", remoteURL).Msg("Forwarding message to remote server")
+	
+	// Create the request body
+	requestBody := strings.NewReader(fmt.Sprintf(`{"message":"%s"}`, messageRequest.Message))
+	
+	// Create the request
+	req, err := http.NewRequest("POST", remoteURL, requestBody)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create request to remote server")
+		c.JSON(500, gin.H{"error": "server_error"})
+		return
+	}
+	
+	// Set headers
+	req.Header.Set("Content-Type", "application/json")
+	
+	// Send the request
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to send message to remote server")
+		c.JSON(500, gin.H{"error": "server_error"})
+		return
+	}
+	defer resp.Body.Close()
+	
+	// Check if the response is successful
+	if resp.StatusCode != http.StatusOK {
+		log.Error().Int("status_code", resp.StatusCode).Msg("Remote server returned error")
+		c.JSON(resp.StatusCode, gin.H{"error": "server_error"})
+		return
+	}
+	
+	// Read the response body
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to read response from remote server")
+		c.JSON(500, gin.H{"error": "server_error"})
+		return
+	}
+	
+	log.Info().Str("response", string(responseBody)).Msg("Message forwarded successfully")
+	
+	// Return the response from the remote server
+	c.Header("Content-Type", "application/json")
+	c.Writer.Write(responseBody)
+}
+
+// Helper function to get minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
