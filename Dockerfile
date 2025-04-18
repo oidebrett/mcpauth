@@ -1,30 +1,27 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.20-alpine AS builder
 
 WORKDIR /app
 
-# Copy go mod and sum files
+# Copy go.mod and go.sum files
 COPY go.mod go.sum ./
-
-# Download dependencies
 RUN go mod download
 
-# Copy source code
-COPY *.go ./
-COPY server/ ./server/
+# Copy the source code
+COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o /mcpauth .
+RUN CGO_ENABLED=0 GOOS=linux go build -o mcpauth ./cmd/mcpauth
 
-# Create a minimal image
-FROM alpine:latest
+# Use a small alpine image for the final container
+FROM alpine:3.17
 
-WORKDIR /
+WORKDIR /app
 
 # Copy the binary from the builder stage
-COPY --from=builder /mcpauth /mcpauth
+COPY --from=builder /app/mcpauth .
 
-# Expose the default port
+# Expose the port
 EXPOSE 11000
 
 # Run the application
-ENTRYPOINT ["/mcpauth"]
+ENTRYPOINT ["./mcpauth"]

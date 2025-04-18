@@ -2,10 +2,20 @@ version: '3.8'
 
 services:
   mcpauth:
+    container_name: mcpauth
     build:
-      context: .
+      context: ../mcpauth  # Build from parent directory (your project root)
       dockerfile: Dockerfile
-    ports:
-      - "11000:11000"
-    command: ["-port=11000", "-path=/sse"]
+    command: [
+      "-port=11000", 
+      "-path=/sse", 
+      "-baseDomain=oauth.mcpgateway.online", 
+      "-devMode=true",
+      "-googleClientID=YOUR_GOOGLE_CLIENT_ID",
+      "-googleClientSecret=YOUR_GOOGLE_CLIENT_SECRET"
+    ]
+    # Alternatively, you can use environment variables:
+    environment:
+      - GOOGLE_CLIENT_ID=YOUR_GOOGLE_CLIENT_ID
+      - GOOGLE_CLIENT_SECRET=YOUR_GOOGLE_CLIENT_SECRET
     restart: unless-stopped
