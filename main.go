@@ -2,10 +2,6 @@ package main
 
 import (
     "flag"
-    "fmt"
-    "os"
-    "os/signal"
-    "syscall"
 
     "github.com/rs/zerolog/log"
     
@@ -14,34 +10,25 @@ import (
 
 func main() {
     // Parse command line flags
-    port := flag.Int("port", 11000, "Port to listen on")
-    path := flag.String("path", "/sse", "Path to serve")
-    baseDomain := flag.String("domain", "", "Base domain for OAuth endpoints")
-    devMode := flag.Bool("dev", false, "Development mode (use HTTP instead of HTTPS)")
+    var devMode bool
+    flag.BoolVar(&devMode, "dev", false, "Run in development mode")
     flag.Parse()
-    
-    // If base domain is not set, use localhost:port
-    domain := *baseDomain
-    if domain == "" {
-        domain = fmt.Sprintf("localhost:%d", *port)
-    }
 
     // Create a new server
-    server := server.NewServer(*path, domain, *devMode)
+    s := server.NewServer("/sse", "localhost:11000", devMode)
     
-    // Start the server in a goroutine
-    go func() {
-        address := fmt.Sprintf(":%d", *port)
-        log.Info().Str("address", address).Str("path", *path).Str("domain", domain).Bool("dev_mode", *devMode).Msg("Starting server")
-        if err := server.Router.Run(address); err != nil {
-            log.Fatal().Err(err).Msg("Failed to start server")
-        }
-    }()
-
-    // Wait for interrupt signal to gracefully shutdown the server
-    quit := make(chan os.Signal, 1)
-    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-    <-quit
+    // Configure Google OAuth
+    // Replace these with your actual Google OAuth credentials
+    googleClientID := "252740974698-sm3m51upn5j2pqk4qm7qkagu7ja77n02.apps.googleusercontent.com"
+    googleClientSecret := "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"
+    googleRedirectURI := "http://localhost:11000/callback"
+    googleScopes := []string{"openid", "email", "profile"}
     
-    log.Info().Msg("Shutting down server")
+    s.SetGoogleOAuthConfig(googleClientID, googleClientSecret, googleRedirectURI, googleScopes)
+    
+    // Start the server
+    log.Info().Msg("Starting server on :11000")
+    if err := s.Router.Run(":11000"); err != nil {
+        log.Fatal().Err(err).Msg("Failed to start server")
+    }
 }

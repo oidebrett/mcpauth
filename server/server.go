@@ -3,27 +3,26 @@ package server
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	
+	"mcpauth/server/providers/google"
 )
 
 // Server represents the HTTP server
-// This comment was added to verify file path
 type Server struct {
 	Router     *gin.Engine
 	Path       string
 	BaseDomain string // Base domain for OAuth endpoints
 	DevMode    bool   // Development mode flag
 	
-	// Google OAuth configuration
-	GoogleOAuth GoogleOAuthConfig
+	// OAuth providers
+	GoogleProvider *google.Provider
 	
 	// Session storage (simple in-memory for now)
 	Sessions map[string]SessionData
@@ -39,27 +38,6 @@ type SessionData struct {
 	AccessToken  string
 	IDToken      string
 	ExpiresAt    time.Time
-}
-
-// GoogleOAuthConfig holds the configuration for Google OAuth
-type GoogleOAuthConfig struct {
-	ClientID     string
-	ClientSecret string
-	RedirectURI  string
-	Scopes       []string
-}
-
-// GoogleUserInfo represents the user info returned by Google
-type GoogleUserInfo struct {
-	ID            string `json:"id"`
-	Email         string `json:"email"`
-	VerifiedEmail bool   `json:"verified_email"`
-	Name          string `json:"name"`
-	GivenName     string `json:"given_name"`
-	FamilyName    string `json:"family_name"`
-	Picture       string `json:"picture"`
-	Locale        string `json:"locale"`
-	HD            string `json:"hd"` // Hosted domain (for Google Workspace accounts)
 }
 
 // NewServer creates a new server instance
@@ -88,12 +66,7 @@ func NewServer(path string, baseDomain string, devMode bool) *Server {
 
 // SetGoogleOAuthConfig sets the Google OAuth configuration
 func (s *Server) SetGoogleOAuthConfig(clientID, clientSecret, redirectURI string, scopes []string) {
-	s.GoogleOAuth = GoogleOAuthConfig{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		RedirectURI:  redirectURI,
-		Scopes:       scopes,
-	}
+	s.GoogleProvider = google.NewProvider(clientID, clientSecret, redirectURI, scopes)
 }
 
 // setupRoutes configures the server routes
@@ -118,6 +91,9 @@ func (s *Server) setupRoutes() {
 	s.Router.GET("/authorize", s.authorizeHandler)
 	s.Router.GET("/callback", s.callbackHandler)
 	s.Router.POST("/token", s.tokenHandler)
+	
+	// Add SSE endpoint
+	s.Router.GET("/events", s.sseHandler)
 }
 
 // unauthorizedHandler returns a 401 Unauthorized response
@@ -260,69 +236,57 @@ func generateRandomString(length int) string {
 	return base64.RawURLEncoding.EncodeToString(b)[:length]
 }
 
-// authorizeHandler initiates the OAuth2 flow with Google
+// authorizeHandler initiates the OAuth flow
 func (s *Server) authorizeHandler(c *gin.Context) {
 	log.Info().Str("path", c.Request.URL.Path).Msg("Received authorization request")
 	
-	// Parse the incoming request
+	// Get query parameters
 	clientID := c.Query("client_id")
 	redirectURI := c.Query("redirect_uri")
 	responseType := c.Query("response_type")
 	scope := c.Query("scope")
-	if scope == "" {
-		scope = "openid email profile"
-	}
+	state := c.Query("state")
 	
-	// Validate required parameters
-	if clientID == "" || redirectURI == "" || responseType != "code" {
+	log.Debug().
+		Str("client_id", clientID).
+		Str("redirect_uri", redirectURI).
+		Str("response_type", responseType).
+		Str("scope", scope).
+		Str("state", state).
+		Msg("Authorization request parameters")
+	
+	// Validate response type
+	if responseType != "code" {
 		c.JSON(400, gin.H{
-			"error": "invalid_request",
-			"error_description": "Missing required parameters",
+			"error": "unsupported_response_type",
+			"error_description": "Only 'code' response type is supported",
 		})
 		return
 	}
 	
-	// Initialize sessions map if needed
-	if s.Sessions == nil {
-		s.Sessions = make(map[string]SessionData)
+	// Generate a random state if not provided
+	if state == "" {
+		state = generateRandomString(32)
 	}
 	
-	// Generate state and nonce
-	state := generateRandomString(32)
+	// Generate a code verifier and nonce
+	codeVerifier := generateRandomString(64)
 	nonce := generateRandomString(32)
 	
-	// Store the session data
+	// Store session data
 	s.Sessions[state] = SessionData{
 		State:        state,
+		CodeVerifier: codeVerifier,
 		ClientID:     clientID,
 		RedirectURI:  redirectURI,
 		Nonce:        nonce,
 	}
 	
-	// Build the Google authorization URL
-	authURL, err := url.Parse("https://accounts.google.com/o/oauth2/v2/auth")
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to parse Google authorize URL")
-		c.JSON(500, gin.H{"error": "server_error"})
-		return
-	}
+	log.Debug().Str("state", state).Msg("Stored session data")
 	
-	q := authURL.Query()
-	q.Set("client_id", s.GoogleOAuth.ClientID)
-	q.Set("redirect_uri", s.GoogleOAuth.RedirectURI)
-	q.Set("response_type", "code")
-	q.Set("scope", scope)
-	q.Set("state", state)
-	q.Set("nonce", nonce)
-	q.Set("access_type", "offline") // Request a refresh token
-	q.Set("prompt", "consent")      // Force consent screen to ensure refresh token
-	
-	authURL.RawQuery = q.Encode()
-	
-	log.Info().Str("auth_url", authURL.String()).Msg("Redirecting to Google OAuth")
-	
-	// Redirect to Google's authorization endpoint
-	c.Redirect(http.StatusTemporaryRedirect, authURL.String())
+	// Redirect to Google OAuth
+	authURL := s.GoogleProvider.GetAuthURL(state, codeVerifier, nonce)
+	c.Redirect(http.StatusTemporaryRedirect, authURL)
 }
 
 // callbackHandler processes the OAuth callback from Google
@@ -333,9 +297,12 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	code := c.Query("code")
 	state := c.Query("state")
 	
+	log.Debug().Str("code", code).Str("state", state).Msg("Callback parameters")
+	
 	// Validate state parameter to prevent CSRF
 	sessionData, exists := s.Sessions[state]
 	if !exists {
+		log.Error().Str("state", state).Msg("Invalid state parameter")
 		c.JSON(400, gin.H{
 			"error": "invalid_request",
 			"error_description": "Invalid state parameter",
@@ -344,68 +311,25 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	}
 	
 	// Exchange the authorization code for tokens
-	tokenURL := "https://oauth2.googleapis.com/token"
-	data := url.Values{}
-	data.Set("code", code)
-	data.Set("client_id", s.GoogleOAuth.ClientID)
-	data.Set("client_secret", s.GoogleOAuth.ClientSecret)
-	data.Set("redirect_uri", s.GoogleOAuth.RedirectURI)
-	data.Set("grant_type", "authorization_code")
-	
-	req, err := http.NewRequest("POST", tokenURL, strings.NewReader(data.Encode()))
+	accessToken, idToken, err := s.GoogleProvider.ExchangeToken(code)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to create token request")
+		log.Error().Err(err).Msg("Failed to exchange token")
 		c.JSON(500, gin.H{"error": "server_error"})
 		return
 	}
 	
-	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-	
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to exchange code for token")
-		c.JSON(500, gin.H{"error": "server_error"})
-		return
-	}
-	defer resp.Body.Close()
-	
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to read token response")
-		c.JSON(500, gin.H{"error": "server_error"})
-		return
-	}
-	
-	var tokenResponse struct {
-		AccessToken  string `json:"access_token"`
-		IDToken      string `json:"id_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
-		TokenType    string `json:"token_type"`
-	}
-	
-	if err := json.Unmarshal(body, &tokenResponse); err != nil {
-		log.Error().Err(err).Msg("Failed to parse token response")
-		c.JSON(500, gin.H{"error": "server_error"})
-		return
-	}
+	log.Debug().Msg("Received tokens from Google")
 	
 	// Store tokens in session
-	sessionData.AccessToken = tokenResponse.AccessToken
-	sessionData.IDToken = tokenResponse.IDToken
-	sessionData.ExpiresAt = time.Now().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second)
+	sessionData.AccessToken = accessToken
+	sessionData.IDToken = idToken
+	sessionData.ExpiresAt = time.Now().Add(time.Hour) // Approximate expiry
 	s.Sessions[state] = sessionData
 	
-	// Get user info
-	userInfo, err := s.getUserInfo(tokenResponse.AccessToken)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to get user info")
-		c.JSON(500, gin.H{"error": "server_error"})
-		return
-	}
+	// Store the code for token exchange
+	s.Sessions[code] = sessionData
 	
-	log.Info().Str("email", userInfo.Email).Msg("User authenticated")
+	log.Debug().Str("state", state).Str("code", code).Msg("Stored tokens in session")
 	
 	// Redirect back to the client with the authorization code
 	redirectURL, err := url.Parse(sessionData.RedirectURI)
@@ -419,43 +343,24 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	q.Set("state", state)
 	redirectURL.RawQuery = q.Encode()
 	
+	log.Debug().Str("redirect_url", redirectURL.String()).Msg("Redirecting to client")
+	
 	c.Redirect(http.StatusTemporaryRedirect, redirectURL.String())
-}
-
-// getUserInfo fetches the user's profile from Google
-func (s *Server) getUserInfo(accessToken string) (*GoogleUserInfo, error) {
-	userInfoURL := "https://www.googleapis.com/oauth2/v1/userinfo"
-	
-	req, err := http.NewRequest("GET", userInfoURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	
-	req.Header.Add("Authorization", "Bearer "+accessToken)
-	
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	
-	var userInfo GoogleUserInfo
-	if err := json.Unmarshal(body, &userInfo); err != nil {
-		return nil, err
-	}
-	
-	return &userInfo, nil
 }
 
 // tokenHandler exchanges an authorization code for tokens
 func (s *Server) tokenHandler(c *gin.Context) {
 	log.Info().Str("path", c.Request.URL.Path).Msg("Received token request")
+	
+	// Set CORS headers
+	origin := c.Request.Header.Get("Origin")
+	if origin == "" {
+		origin = "*"
+	}
+	c.Header("Access-Control-Allow-Origin", origin)
+	c.Header("Access-Control-Allow-Methods", "POST, OPTIONS")
+	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+	c.Header("Access-Control-Allow-Credentials", "true")
 	
 	// Parse the token request
 	grantType := c.PostForm("grant_type")
@@ -464,45 +369,52 @@ func (s *Server) tokenHandler(c *gin.Context) {
 	clientID := c.PostForm("client_id")
 	clientSecret := c.PostForm("client_secret")
 	
-	// Validate client credentials
-	if clientID != s.GoogleOAuth.ClientID || clientSecret != s.GoogleOAuth.ClientSecret {
-		c.JSON(401, gin.H{
-			"error": "invalid_client",
-			"error_description": "Invalid client credentials",
+	log.Debug().
+		Str("grant_type", grantType).
+		Str("code", code).
+		Str("redirect_uri", redirectURI).
+		Str("client_id", clientID).
+		Msg("Token request parameters")
+	
+	// Check if Google provider is configured
+	if s.GoogleProvider == nil {
+		log.Error().Msg("Google provider not configured")
+		c.JSON(500, gin.H{
+			"error": "server_error",
+			"error_description": "OAuth provider not configured",
 		})
 		return
 	}
 	
-	// Validate required parameters
-	if grantType != "authorization_code" || code == "" || redirectURI == "" {
-		c.JSON(400, gin.H{
-			"error": "invalid_request",
-			"error_description": "Missing required parameters",
-		})
-		return
-	}
-	
-	// Find the session with this code
-	var sessionData SessionData
-	var sessionKey string
-	found := false
-	
-	for key, session := range s.Sessions {
-		if session.ClientID == clientID && session.RedirectURI == redirectURI {
-			sessionData = session
-			sessionKey = key
-			found = true
-			break
+	// In development mode, skip client validation
+	if !s.DevMode {
+		// Validate client credentials
+		if clientID != s.GoogleProvider.ClientID || clientSecret != s.GoogleProvider.ClientSecret {
+			log.Error().
+				Str("provided_client_id", clientID).
+				Str("expected_client_id", s.GoogleProvider.ClientID).
+				Msg("Invalid client credentials")
+			
+			c.JSON(401, gin.H{
+				"error": "invalid_client",
+				"error_description": "Invalid client credentials",
+			})
+			return
 		}
 	}
 	
+	// Find the session with this code
+	sessionData, found := s.Sessions[code]
 	if !found {
+		log.Error().Str("code", code).Msg("Invalid authorization code")
 		c.JSON(400, gin.H{
 			"error": "invalid_grant",
 			"error_description": "Invalid authorization code",
 		})
 		return
 	}
+	
+	log.Debug().Str("code", code).Msg("Found session for code")
 	
 	// Return the tokens
 	c.JSON(200, gin.H{
@@ -512,6 +424,66 @@ func (s *Server) tokenHandler(c *gin.Context) {
 		"id_token": sessionData.IDToken,
 	})
 	
-	// Remove the session after use
-	delete(s.Sessions, sessionKey)
+	// Clean up sessions after use
+	delete(s.Sessions, code)
+}
+
+// sseHandler handles Server-Sent Events connections
+func (s *Server) sseHandler(c *gin.Context) {
+	// Get the authorization header
+	authHeader := c.GetHeader("Authorization")
+	
+	// Check if the authorization header is present and has the correct format
+	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		c.Header("WWW-Authenticate", "Bearer realm=\"mcpauth\"")
+		c.JSON(401, gin.H{
+			"error": "unauthorized",
+			"error_description": "Missing or invalid authorization header",
+		})
+		return
+	}
+	
+	// Extract the token
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	
+	// Validate the token (simple check for now - just see if it exists in any session)
+	var validToken bool
+	for _, session := range s.Sessions {
+		if session.AccessToken == token {
+			validToken = true
+			break
+		}
+	}
+	
+	if !validToken {
+		c.Header("WWW-Authenticate", "Bearer realm=\"mcpauth\"")
+		c.JSON(401, gin.H{
+			"error": "unauthorized",
+			"error_description": "Invalid token",
+		})
+		return
+	}
+	
+	// Set headers for SSE
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("Transfer-Encoding", "chunked")
+	
+	// Create a channel for client disconnection
+	clientGone := c.Writer.CloseNotify()
+	
+	// Keep the connection open
+	for {
+		select {
+		case <-clientGone:
+			log.Debug().Msg("Client disconnected from SSE")
+			return
+		default:
+			// Send a heartbeat event every 15 seconds
+			c.SSEvent("heartbeat", gin.H{"time": time.Now().Unix()})
+			c.Writer.Flush()
+			time.Sleep(15 * time.Second)
+		}
+	}
 }
