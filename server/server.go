@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
+	"mcpauth/server/providers"
 	"mcpauth/server/providers/google"
 )
 
@@ -25,13 +26,13 @@ type Client struct {
 
 // Server represents the OAuth server
 type Server struct {
-	Router         *gin.Engine
-	Sessions       map[string]SessionData
-	Clients        map[string]Client
-	GoogleProvider *google.Provider
-	ProtectedPath  string
-	BaseDomain     string
-	DevMode        bool
+	Router        *gin.Engine
+	Sessions      map[string]SessionData
+	Clients       map[string]Client
+	Provider      providers.Provider
+	ProtectedPath string
+	BaseDomain    string
+	DevMode       bool
 }
 
 // SessionData stores OAuth state and session information
@@ -65,9 +66,24 @@ func NewServer(protectedPath, baseDomain string, devMode bool) *Server {
 	return server
 }
 
-// SetGoogleOAuthConfig sets the Google OAuth configuration
+// ConfigureProvider sets up the specified OAuth provider
+func (s *Server) ConfigureProvider(providerName, clientID, clientSecret, redirectURI string, scopes []string) error {
+	switch providerName {
+	case "google":
+		s.Provider = google.NewProvider(clientID, clientSecret, redirectURI, scopes)
+		return nil
+	// Add more providers here as needed
+	// case "auth0":
+	//     s.Provider = auth0.NewProvider(clientID, clientSecret, redirectURI, scopes)
+	//     return nil
+	default:
+		return fmt.Errorf("unsupported provider: %s", providerName)
+	}
+}
+
+// SetGoogleOAuthConfig sets the Google OAuth configuration (for backward compatibility)
 func (s *Server) SetGoogleOAuthConfig(clientID, clientSecret, redirectURI string, scopes []string) {
-	s.GoogleProvider = google.NewProvider(clientID, clientSecret, redirectURI, scopes)
+	s.Provider = google.NewProvider(clientID, clientSecret, redirectURI, scopes)
 }
 
 // SetupRoutes configures all the routes for the server
@@ -236,9 +252,9 @@ func generateRandomString(length int) string {
 func (s *Server) authorizeHandler(c *gin.Context) {
 	log.Info().Str("path", c.Request.URL.Path).Msg("Received authorization request")
 
-	// Check if Google provider is configured
-	if s.GoogleProvider == nil {
-		log.Error().Msg("Google provider not configured")
+	// Check if provider is configured
+	if s.Provider == nil {
+		log.Error().Msg("OAuth provider not configured")
 		c.JSON(500, gin.H{
 			"error":             "server_error",
 			"error_description": "OAuth provider not configured",
@@ -290,14 +306,14 @@ func (s *Server) authorizeHandler(c *gin.Context) {
 
 	log.Debug().Str("state", state).Msg("Stored session data")
 
-	// Redirect to Google OAuth
-	authURL := s.GoogleProvider.GetAuthURL(state, codeVerifier, nonce)
+	// Redirect to OAuth provider
+	authURL := s.Provider.GetAuthURL(state, codeVerifier, nonce)
 	c.Redirect(http.StatusTemporaryRedirect, authURL)
 }
 
-// callbackHandler processes the OAuth callback from Google
+// callbackHandler processes the OAuth callback
 func (s *Server) callbackHandler(c *gin.Context) {
-	log.Info().Str("path", c.Request.URL.Path).Msg("Received callback from Google")
+	log.Info().Str("path", c.Request.URL.Path).Msg("Received callback from OAuth provider")
 
 	// Get the authorization code and state from the request
 	code := c.Query("code")
@@ -317,7 +333,7 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	}
 
 	// Exchange the authorization code for tokens
-	accessToken, idToken, err := s.GoogleProvider.ExchangeToken(code, sessionData.CodeVerifier)
+	accessToken, idToken, err := s.Provider.ExchangeToken(code, sessionData.CodeVerifier)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to exchange token")
 		c.JSON(500, gin.H{"error": "server_error"})
@@ -488,26 +504,54 @@ func (s *Server) sseHandler(c *gin.Context) {
 	authHeader := c.GetHeader("Authorization")
 	tokenParam := c.Query("access_token")
 
-	log.Debug().
-		Str("auth_header", authHeader).
-		Str("token_param", tokenParam).
-		Str("origin", origin).
-		Str("referer", c.Request.Header.Get("Referer")).
-		Msg("Authorization received")
+	var token string
 
-	// Check if any token is present (either in header or query param)
-	if (authHeader != "" && strings.HasPrefix(authHeader, "Bearer ")) || tokenParam != "" {
-		// For now, accept any token without validation
-		log.Warn().Msg("TEMPORARY: Accepting any token without validation")
-		c.Status(http.StatusOK)
+	// Extract token from header or query parameter
+	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+	} else if tokenParam != "" {
+		token = tokenParam
+	} else {
+		// No token provided, return 401 Unauthorized
+		log.Warn().Msg("Missing authorization token")
+		c.Header("WWW-Authenticate", "Bearer realm=\"mcpauth\"")
+		c.JSON(401, gin.H{
+			"status":  401,
+			"message": "Unauthorized",
+		})
 		return
 	}
 
-	// No token provided, return 401 Unauthorized
-	log.Warn().Msg("Missing or invalid authorization")
-	c.Header("WWW-Authenticate", "Bearer realm=\"mcpauth\"")
-	c.JSON(401, gin.H{
-		"status":  401,
-		"message": "Unauthorized",
-	})
+	// Validate the token by checking if it exists in any active session
+	valid := false
+	for _, session := range s.Sessions {
+		if session.AccessToken == token {
+			// Check if token is expired
+			if time.Now().After(session.ExpiresAt) {
+				log.Warn().Msg("Token expired")
+				c.Header("WWW-Authenticate", "Bearer error=\"invalid_token\", error_description=\"The access token expired\"")
+				c.JSON(401, gin.H{
+					"status":  401,
+					"message": "Token expired",
+				})
+				return
+			}
+			valid = true
+			break
+		}
+	}
+
+	if !valid {
+		log.Warn().Msg("Invalid token")
+		c.Header("WWW-Authenticate", "Bearer error=\"invalid_token\"")
+		c.JSON(401, gin.H{
+			"status":  401,
+			"message": "Invalid token",
+		})
+		return
+	}
+
+	// Token is valid
+	log.Info().Msg("Valid token, authentication successful")
+	c.Status(http.StatusOK)
 }
