@@ -31,7 +31,7 @@ type Server struct {
 	Clients       map[string]Client
 	Provider      providers.Provider
 	ProtectedPath string
-	BaseDomain    string
+	OAuthDomain   string // Renamed from BaseDomain
 	DevMode       bool
 }
 
@@ -48,7 +48,7 @@ type SessionData struct {
 }
 
 // NewServer creates a new server instance
-func NewServer(protectedPath, baseDomain string, devMode bool) *Server {
+func NewServer(protectedPath, oauthDomain string, devMode bool) *Server {
 	router := gin.Default()
 
 	server := &Server{
@@ -56,7 +56,7 @@ func NewServer(protectedPath, baseDomain string, devMode bool) *Server {
 		Sessions:      make(map[string]SessionData),
 		Clients:       make(map[string]Client),
 		ProtectedPath: protectedPath,
-		BaseDomain:    baseDomain,
+		OAuthDomain:   oauthDomain, // Use the new name
 		DevMode:       devMode,
 	}
 
@@ -79,11 +79,6 @@ func (s *Server) ConfigureProvider(providerName, clientID, clientSecret, redirec
 	default:
 		return fmt.Errorf("unsupported provider: %s", providerName)
 	}
-}
-
-// SetGoogleOAuthConfig sets the Google OAuth configuration (for backward compatibility)
-func (s *Server) SetGoogleOAuthConfig(clientID, clientSecret, redirectURI string, scopes []string) {
-	s.Provider = google.NewProvider(clientID, clientSecret, redirectURI, scopes)
 }
 
 // SetupRoutes configures all the routes for the server
@@ -141,7 +136,10 @@ func (s *Server) healthCheckHandler(c *gin.Context) {
 
 // oauthAuthorizationServerHandler returns OAuth server metadata
 func (s *Server) oauthAuthorizationServerHandler(c *gin.Context) {
-	log.Info().Str("path", c.Request.URL.Path).Msg("Received OAuth server metadata request")
+	log.Info().
+		Str("path", c.Request.URL.Path).
+		Str("domain", s.OAuthDomain). // Log the domain being used
+		Msg("Received OAuth server metadata request")
 
 	// Set CORS headers
 	origin := c.Request.Header.Get("Origin")
@@ -157,18 +155,18 @@ func (s *Server) oauthAuthorizationServerHandler(c *gin.Context) {
 	if s.DevMode {
 		protocol = "http"
 	}
-	baseDomain := s.BaseDomain
 
+	// Use the OAuthDomain field
 	c.JSON(200, gin.H{
-		"issuer":                                fmt.Sprintf("%s://%s", protocol, baseDomain),
-		"authorization_endpoint":                fmt.Sprintf("%s://%s/authorize", protocol, baseDomain),
-		"token_endpoint":                        fmt.Sprintf("%s://%s/token", protocol, baseDomain),
-		"registration_endpoint":                 fmt.Sprintf("%s://%s/register", protocol, baseDomain),
-		"jwks_uri":                              fmt.Sprintf("%s://%s/jwks", protocol, baseDomain),
+		"issuer":                                fmt.Sprintf("%s://%s", protocol, s.OAuthDomain),
+		"authorization_endpoint":                fmt.Sprintf("%s://%s/authorize", protocol, s.OAuthDomain),
+		"token_endpoint":                        fmt.Sprintf("%s://%s/token", protocol, s.OAuthDomain),
+		"registration_endpoint":                 fmt.Sprintf("%s://%s/register", protocol, s.OAuthDomain),
+		"jwks_uri":                              fmt.Sprintf("%s://%s/jwks", protocol, s.OAuthDomain),
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
-		"revocation_endpoint":                   fmt.Sprintf("%s://%s/token", protocol, baseDomain),
+		"revocation_endpoint":                   fmt.Sprintf("%s://%s/token", protocol, s.OAuthDomain),
 		"code_challenge_methods_supported":      []string{"plain", "S256"},
 	})
 }

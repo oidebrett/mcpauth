@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 
 	"mcpauth/server"
 
@@ -14,8 +16,8 @@ import (
 func main() {
 	// Define command line flags
 	port := flag.Int("port", 11000, "Port to run the server on")
-	path := flag.String("path", "/sse", "Path to protect with authentication")
-	baseDomain := flag.String("baseDomain", "localhost", "Base domain for OAuth endpoints")
+	protectedPath := flag.String("protectedPath", "/sse", "Path to protect with authentication")
+	oauthDomain := flag.String("oauthDomain", "localhost", "Domain for OAuth endpoints")
 	devMode := flag.Bool("devMode", false, "Enable development mode")
 
 	// OAuth provider configuration
@@ -27,10 +29,40 @@ func main() {
 	googleClientID := flag.String("googleClientID", "", "Google OAuth client ID (deprecated, use clientID)")
 	googleClientSecret := flag.String("googleClientSecret", "", "Google OAuth client secret (deprecated, use clientSecret)")
 
+	// Parse flags
 	flag.Parse()
 
+	// Check environment variables for configuration
+	if envPort := os.Getenv("PORT"); envPort != "" {
+		if p, err := strconv.Atoi(envPort); err == nil {
+			*port = p
+		}
+	}
+
+	// Use PROTECTED_PATH instead of PATH to avoid system PATH variable conflict
+	if envPath := os.Getenv("PROTECTED_PATH"); envPath != "" {
+		*protectedPath = envPath
+	}
+
+	if envDomain := os.Getenv("OAUTH_DOMAIN"); envDomain != "" {
+		*oauthDomain = envDomain
+		log.Info().Str("domain_from_env", envDomain).Msg("Using domain from environment")
+	}
+
+	if envDevMode := os.Getenv("DEV_MODE"); envDevMode != "" {
+		*devMode = strings.ToLower(envDevMode) == "true"
+	}
+
+	// Log the configuration
+	log.Info().
+		Int("port", *port).
+		Str("protectedPath", *protectedPath).
+		Str("oauthDomain", *oauthDomain).
+		Bool("devMode", *devMode).
+		Msg("Starting with configuration")
+
 	// Create and configure the server
-	s := server.NewServer(*path, *baseDomain, *devMode)
+	s := server.NewServer(*protectedPath, *oauthDomain, *devMode)
 
 	// Use provider-specific flags if available, otherwise use generic ones
 	actualClientID := *clientID
@@ -75,7 +107,7 @@ func main() {
 	if *devMode {
 		protocol = "http"
 	}
-	redirectURI := fmt.Sprintf("%s://%s/callback", protocol, *baseDomain)
+	redirectURI := fmt.Sprintf("%s://%s/callback", protocol, *oauthDomain)
 
 	// Configure the OAuth provider
 	if actualClientID != "" && actualClientSecret != "" {
@@ -93,7 +125,7 @@ func main() {
 
 	// Start the server
 	address := fmt.Sprintf(":%d", *port)
-	log.Info().Str("address", address).Str("path", *path).Msg("Starting server")
+	log.Info().Str("address", address).Str("path", *protectedPath).Msg("Starting server")
 
 	err := http.ListenAndServe(address, s.Router)
 	if err != nil {

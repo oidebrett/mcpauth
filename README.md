@@ -38,17 +38,30 @@ go mod tidy
 
 ```bash
 # Run with default settings
-go run main.go
+go run cmd/main.go
 
 # Run with custom port and path
-go run main.go -port=8080 -path=/auth
+go run cmd/main.go -port=8080 -protected_path=/sse
+```
+
+### Environment Variables
+
+The application can be configured using environment variables:
+
+```
+PORT=11000                      # Port to run the server on
+PROTECTED_PATH=/sse             # Path of the MCP SSE server endpoint
+OAUTH_DOMAIN=your-domain.com    # Domain for OAuth endpoints
+DEV_MODE=false                  # Enable development mode
+CLIENT_ID=YOUR_CLIENT_ID        # OAuth client ID
+CLIENT_SECRET=YOUR_CLIENT_SECRET # OAuth client secret
 ```
 
 ### Build and run
 
 ```bash
 # Build the application
-go build -o mcpauth
+go build -o mcpauth ./cmd
 
 # Run the built application
 ./mcpauth
@@ -71,7 +84,7 @@ go build -o mcpauth
          "request": "launch",
          "mode": "auto",
          "program": "${workspaceFolder}",
-         "args": ["-port=11000", "-path=/sse"]
+         "args": ["-port=11000", "-protectedPath=/sse"]
        }
      ]
    }
@@ -83,7 +96,7 @@ go build -o mcpauth
 1. Open the project in GoLand
 2. Create a new Run/Debug Configuration
 3. Set the configuration to "Go Build"
-4. Set the program arguments to "-port=11000 -path=/sse"
+4. Set the program arguments to "-port=11000 -protectedPath=/sse"
 5. Click Debug to start debugging
 
 ### Testing with curl
@@ -119,4 +132,97 @@ docker-compose logs -f
 
 # Stop the service
 docker-compose down
+```
+
+## Docker Compose Configuration
+
+### Basic Configuration
+
+To run the MCP Auth Server with Docker Compose, add the following service definition to your `docker-compose.yml` file:
+
+```yaml
+services:
+  mcpauth:
+    container_name: mcpauth
+    build:
+      context: ./mcpauth  # Path to your project root
+      dockerfile: Dockerfile
+    command: [
+      "-port=11000", 
+      "-protectedPath=/sse", 
+      "-oauthDomain=your-domain.com", 
+      "-devMode=false"
+    ]
+    restart: unless-stopped
+    ports:
+      - "11000:11000"
+```
+
+### Environment Variable Configuration
+
+You can configure all parameters using environment variables, which is the recommended approach:
+
+1. Create a `.env` file in the same directory as your `docker-compose.yml`:
+
+```
+PORT=11000
+PROTECTED_PATH=/sse
+OAUTH_DOMAIN=your-domain.com
+DEV_MODE=false
+CLIENT_ID=YOUR_OAUTH_CLIENT_ID_HERE
+CLIENT_SECRET=YOUR_OAUTH_CLIENT_SECRET_HERE
+```
+
+2. Update your `docker-compose.yml` to use these environment variables:
+
+```yaml
+services:
+  mcpauth:
+    container_name: mcpauth
+    build:
+      context: ./mcpauth
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - PORT=${PORT}
+      - PROTECTED_PATH=${PROTECTED_PATH}
+      - OAUTH_DOMAIN=${OAUTH_DOMAIN}
+      - DEV_MODE=${DEV_MODE}
+      - OAUTH_PROVIDER=google  # Currently supported: google
+      - CLIENT_ID=${CLIENT_ID}
+      - CLIENT_SECRET=${CLIENT_SECRET}
+    restart: unless-stopped
+    ports:
+      - "${PORT}:${PORT}"
+```
+
+3. Make sure to add `.env` to your `.gitignore` file to avoid committing sensitive credentials.
+
+### Mixed Configuration
+
+You can also mix command-line arguments with environment variables. Command-line arguments take precedence:
+
+```yaml
+services:
+  mcpauth:
+    container_name: mcpauth
+    build:
+      context: ./mcpauth
+      dockerfile: Dockerfile
+    command: [
+      "-port=11000", 
+      "-protected_path=/sse"
+    ]
+    env_file:
+      - .env
+    environment:
+      - OAUTH_DOMAIN=your-domain.com
+      - DEV_MODE=false
+      - OAUTH_PROVIDER=google
+      - CLIENT_ID=${CLIENT_ID}
+      - CLIENT_SECRET=${CLIENT_SECRET}
+    restart: unless-stopped
+    ports:
+      - "11000:11000"
 ```
