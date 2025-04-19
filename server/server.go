@@ -33,6 +33,7 @@ type Server struct {
 	ProtectedPath string
 	OAuthDomain   string // Renamed from BaseDomain
 	DevMode       bool
+	AllowedEmails []string // List of emails allowed to access protected resources
 }
 
 // SessionData stores OAuth state and session information
@@ -45,6 +46,7 @@ type SessionData struct {
 	AccessToken  string
 	IDToken      string
 	ExpiresAt    time.Time
+	Email        string // Store the user's email
 }
 
 // NewServer creates a new server instance
@@ -58,12 +60,19 @@ func NewServer(protectedPath, oauthDomain string, devMode bool) *Server {
 		ProtectedPath: protectedPath,
 		OAuthDomain:   oauthDomain, // Use the new name
 		DevMode:       devMode,
+		AllowedEmails: []string{}, // Initialize empty allowed emails list
 	}
 
 	// Set up all routes
 	server.SetupRoutes()
 
 	return server
+}
+
+// SetAllowedEmails sets the list of emails allowed to access protected resources
+func (s *Server) SetAllowedEmails(emails []string) {
+	s.AllowedEmails = emails
+	log.Info().Strs("allowed_emails", emails).Msg("Configured allowed emails")
 }
 
 // ConfigureProvider sets up the specified OAuth provider
@@ -338,14 +347,28 @@ func (s *Server) callbackHandler(c *gin.Context) {
 		return
 	}
 
-	log.Debug().
-		Str("access_token_length", fmt.Sprintf("%d", len(accessToken))).
-		Str("id_token_length", fmt.Sprintf("%d", len(idToken))).
-		Msg("Tokens received from provider")
+	// Get user info to extract email
+	userInfo, err := s.Provider.GetUserInfo(accessToken)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get user info")
+		c.JSON(500, gin.H{"error": "server_error"})
+		return
+	}
 
-	// Store tokens in session
+	// Extract email from user info
+	email, ok := userInfo["email"].(string)
+	if !ok {
+		log.Error().Interface("user_info", userInfo).Msg("Email not found in user info")
+		c.JSON(500, gin.H{"error": "server_error"})
+		return
+	}
+
+	log.Info().Str("email", email).Msg("User authenticated")
+
+	// Store tokens and email in session
 	sessionData.AccessToken = accessToken
 	sessionData.IDToken = idToken
+	sessionData.Email = email
 	sessionData.ExpiresAt = time.Now().Add(time.Hour) // Approximate expiry
 	s.Sessions[state] = sessionData
 
@@ -522,6 +545,8 @@ func (s *Server) sseHandler(c *gin.Context) {
 
 	// Validate the token by checking if it exists in any active session
 	valid := false
+	var userEmail string
+
 	for _, session := range s.Sessions {
 		if session.AccessToken == token {
 			// Check if token is expired
@@ -535,6 +560,7 @@ func (s *Server) sseHandler(c *gin.Context) {
 				return
 			}
 			valid = true
+			userEmail = session.Email
 			break
 		}
 	}
@@ -549,7 +575,27 @@ func (s *Server) sseHandler(c *gin.Context) {
 		return
 	}
 
-	// Token is valid
-	log.Info().Msg("Valid token, authentication successful")
+	// Check if email is in the allowed list (if the list is not empty)
+	if len(s.AllowedEmails) > 0 {
+		emailAllowed := false
+		for _, allowedEmail := range s.AllowedEmails {
+			if allowedEmail == userEmail {
+				emailAllowed = true
+				break
+			}
+		}
+
+		if !emailAllowed {
+			log.Warn().Str("email", userEmail).Msg("Email not in allowed list")
+			c.JSON(401, gin.H{
+				"status":  401,
+				"message": "Email not in allowed list",
+			})
+			return
+		}
+	}
+
+	// Token is valid and email is authorized
+	log.Info().Str("email", userEmail).Msg("Authentication and authorization successful")
 	c.Status(http.StatusOK)
 }

@@ -50,11 +50,12 @@ The application can be configured using environment variables:
 
 ```
 PORT=11000                      # Port to run the server on
-PROTECTED_PATH=/sse             # Path of the MCP SSE server endpoint
+PROTECTED_PATH=/sse             # Path of the MCP SSE server endpoint (replaces PATH to avoid conflicts with system PATH)
 OAUTH_DOMAIN=your-domain.com    # Domain for OAuth endpoints
 DEV_MODE=false                  # Enable development mode
 CLIENT_ID=YOUR_CLIENT_ID        # OAuth client ID
 CLIENT_SECRET=YOUR_CLIENT_SECRET # OAuth client secret
+ALLOWED_EMAILS=user1@example.com,user2@example.com  # Comma-separated list of authorized emails (empty = allow all)
 ```
 
 ### Build and run
@@ -226,3 +227,65 @@ services:
     ports:
       - "11000:11000"
 ```
+
+## Authorization with Email Whitelist
+
+MCP Auth Server now supports authorization via an email whitelist. After a user authenticates through OAuth, their email is checked against a configurable whitelist.
+
+### How it works
+
+1. When a user authenticates via OAuth, their email is retrieved from the OAuth provider
+2. If a whitelist is configured, the user's email is checked against it
+3. If the whitelist is empty, all authenticated users are allowed access
+4. If the whitelist contains emails, only users with matching emails are allowed access
+
+### Configuration
+
+You can configure the email whitelist using either:
+
+#### Command-line flag:
+
+```bash
+go run cmd/main.go -allowedEmails="user1@example.com,user2@example.com"
+```
+
+#### Environment variable:
+
+```
+ALLOWED_EMAILS=user1@example.com,user2@example.com
+```
+
+### Docker Compose Configuration
+
+Update your `docker-compose.yml` to include the allowed emails:
+
+```yaml
+services:
+  mcpauth:
+    container_name: mcpauth
+    build:
+      context: ./mcpauth
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - PORT=${PORT}
+      - PROTECTED_PATH=${PROTECTED_PATH}
+      - OAUTH_DOMAIN=${OAUTH_DOMAIN}
+      - DEV_MODE=${DEV_MODE}
+      - OAUTH_PROVIDER=google
+      - CLIENT_ID=${CLIENT_ID}
+      - CLIENT_SECRET=${CLIENT_SECRET}
+      - ALLOWED_EMAILS=${ALLOWED_EMAILS}
+    restart: unless-stopped
+    ports:
+      - "${PORT}:${PORT}"
+```
+
+And in your `.env` file:
+
+```
+ALLOWED_EMAILS=user1@example.com,user2@example.com
+```
+
+Leave `ALLOWED_EMAILS` empty or omit it entirely to allow all authenticated users.

@@ -19,6 +19,7 @@ func main() {
 	protectedPath := flag.String("protectedPath", "/sse", "Path to protect with authentication")
 	oauthDomain := flag.String("oauthDomain", "localhost", "Domain for OAuth endpoints")
 	devMode := flag.Bool("devMode", false, "Enable development mode")
+	allowedEmails := flag.String("allowedEmails", "", "Comma-separated list of emails allowed to access protected resources (empty = allow all)")
 
 	// OAuth provider configuration
 	provider := flag.String("provider", "google", "OAuth provider to use (google, auth0, etc)")
@@ -53,16 +54,31 @@ func main() {
 		*devMode = strings.ToLower(envDevMode) == "true"
 	}
 
+	if envAllowedEmails := os.Getenv("ALLOWED_EMAILS"); envAllowedEmails != "" {
+		*allowedEmails = envAllowedEmails
+	}
+
 	// Log the configuration
 	log.Info().
 		Int("port", *port).
 		Str("protectedPath", *protectedPath).
 		Str("oauthDomain", *oauthDomain).
 		Bool("devMode", *devMode).
+		Str("allowedEmails", *allowedEmails).
 		Msg("Starting with configuration")
 
 	// Create and configure the server
 	s := server.NewServer(*protectedPath, *oauthDomain, *devMode)
+
+	// Configure allowed emails if provided
+	if *allowedEmails != "" {
+		emailList := strings.Split(*allowedEmails, ",")
+		// Trim spaces from each email
+		for i, email := range emailList {
+			emailList[i] = strings.TrimSpace(email)
+		}
+		s.SetAllowedEmails(emailList)
+	}
 
 	// Use provider-specific flags if available, otherwise use generic ones
 	actualClientID := *clientID
