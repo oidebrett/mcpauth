@@ -56,6 +56,7 @@ DEV_MODE=false                  # Enable development mode
 CLIENT_ID=YOUR_CLIENT_ID        # OAuth client ID
 CLIENT_SECRET=YOUR_CLIENT_SECRET # OAuth client secret
 ALLOWED_EMAILS=user1@example.com,user2@example.com  # Comma-separated list of authorized emails (empty = allow all)
+LOG_LEVEL=1                     # Log level: 0=debug (all logs), 1=info (no secrets), 2=minimal (startup/shutdown only)
 ```
 
 ### Build and run
@@ -155,8 +156,8 @@ services:
       "-devMode=false"
     ]
     restart: unless-stopped
-    ports:
-      - "11000:11000"
+    ports:              #dont use if using gerbil
+      - "11000:11000"   #dont use if using gerbil
 ```
 
 ### Environment Variable Configuration
@@ -195,7 +196,7 @@ services:
       - CLIENT_SECRET=${CLIENT_SECRET}
     restart: unless-stopped
     ports:
-      - "${PORT}:${PORT}"
+      - "${PORT}:${PORT}"  #dont use if using gerbil
 ```
 
 3. Make sure to add `.env` to your `.gitignore` file to avoid committing sensitive credentials.
@@ -225,7 +226,7 @@ services:
       - CLIENT_SECRET=${CLIENT_SECRET}
     restart: unless-stopped
     ports:
-      - "11000:11000"
+      - "11000:11000" #dont use if using gerbil
 ```
 
 ## Authorization with Email Whitelist
@@ -279,7 +280,7 @@ services:
       - ALLOWED_EMAILS=${ALLOWED_EMAILS}
     restart: unless-stopped
     ports:
-      - "${PORT}:${PORT}"
+      - "${PORT}:${PORT}" #dont use if using gerbil
 ```
 
 And in your `.env` file:
@@ -289,3 +290,95 @@ ALLOWED_EMAILS=user1@example.com,user2@example.com
 ```
 
 Leave `ALLOWED_EMAILS` empty or omit it entirely to allow all authenticated users.
+
+
+
+## Setting up a `forwardAuth` middleware
+
+1. **Defining the middleware in a dynamic config file**, and  
+2. **Attaching that middleware to a container via labels**.
+
+
+---
+
+### **1. Defining the Middleware**
+
+In your `dynamic_config.yml` (or wherever you're loading dynamic configs), you've already defined the middleware:
+
+```yaml
+mymcpauth:
+  forwardAuth:
+    address: http://mcpauth:11000/sse
+    authResponseHeaders:
+      - "X-Forwarded-User"
+```
+
+This tells Traefik:
+
+- When this middleware is used, forward the request to `http://mcpauth:11000/sse` for authentication.
+- If the response is a 2xx, the request continues.
+- It will pass along the `X-Forwarded-User` header from the auth response to the backend.
+
+✅ **Good to point out**: `mcpauth` is the name of the service in the Docker network Traefik is in — typically a container named `mcpauth`.
+
+---
+
+### **2. Attaching Middleware to a Container**
+
+Let’s say you have a `whoami` container and want to attach `mymcpauth`.
+
+Here’s what you’d tell the user to add in the container’s `labels` section:
+
+```yaml
+services:
+  whoami:
+    image: ghcr.io/traefik/whoami:latest
+    environment:
+      - WHOAMI_PORT_NUMBER=4545
+    labels:
+      - "traefik.http.routers.whoami.rule=Host(`whoami.example.com`)"
+      - "traefik.http.routers.whoami.middlewares=mymcpauth@file"
+      - "traefik.http.services.whoami.loadbalancer.server.port=4545"
+      - "traefik.http.routers.whoami.entrypoints=websecure"
+      - "traefik.http.routers.whoami.tls=true"
+```
+
+### ✅ Key label:
+```yaml
+- "traefik.http.routers.whoami.middlewares=mymcpauth@file"
+```
+
+That tells Traefik:  
+> "Hey, go look in the file-based dynamic config for a middleware named `mymcpauth`."
+
+---
+
+### Bonus: Explaining the `@file` vs `@docker`
+
+- `@file` → dynamic config (like your `dynamic_config.yml`)
+- `@docker` → Docker label-based middlewares
+
+If the middleware had been defined in Docker labels instead, it would be:  
+```yaml
+- "traefik.http.routers.whoami.middlewares=mymcpauth@docker"
+```
+
+---
+
+### Quick Recap You Could Tell the User
+
+1. **Define the middleware** (in `dynamic_config.yml`):
+    ```yaml
+    mymcpauth:
+      forwardAuth:
+        address: http://mcpauth:11000/sse
+        authResponseHeaders:
+          - "X-Forwarded-User"
+    ```
+
+2. **Attach to a container with a router label**:
+    ```yaml
+    - "traefik.http.routers.myapp.middlewares=mymcpauth@file"
+    ```
+
+Want me to give you a fully working docker-compose example for this setup too?

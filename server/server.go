@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"mcpauth/server/providers"
@@ -92,19 +93,21 @@ func (s *Server) ConfigureProvider(providerName, clientID, clientSecret, redirec
 
 // SetupRoutes configures all the routes for the server
 func (s *Server) SetupRoutes() {
-	// Add debug logging middleware for all routes
-	s.Router.Use(func(c *gin.Context) {
-		log.Debug().
-			Str("path", c.Request.URL.Path).
-			Str("method", c.Request.Method).
-			Str("query", c.Request.URL.RawQuery).
-			Msg("Incoming request before handler")
-		c.Next()
-		log.Debug().
-			Str("path", c.Request.URL.Path).
-			Int("status", c.Writer.Status()).
-			Msg("Outgoing response after handler")
-	})
+	// Only add debug logging middleware if we're at debug level
+	if zerolog.GlobalLevel() <= zerolog.DebugLevel {
+		s.Router.Use(func(c *gin.Context) {
+			log.Debug().
+				Str("path", c.Request.URL.Path).
+				Str("method", c.Request.Method).
+				Str("query", c.Request.URL.RawQuery).
+				Msg("Incoming request before handler")
+			c.Next()
+			log.Debug().
+				Str("path", c.Request.URL.Path).
+				Int("status", c.Writer.Status()).
+				Msg("Outgoing response after handler")
+		})
+	}
 
 	// Add a health check endpoint
 	s.Router.GET("/health", s.healthCheckHandler)
@@ -326,7 +329,9 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	code := c.Query("code")
 	state := c.Query("state")
 
-	log.Debug().Str("code", code).Str("state", state).Msg("Callback parameters")
+	// Only log sensitive data at debug level
+	log.Debug().Str("state", state).Msg("Callback parameters")
+	// Don't log the code as it's sensitive
 
 	// Validate state parameter to prevent CSRF
 	sessionData, exists := s.Sessions[state]

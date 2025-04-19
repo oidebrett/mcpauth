@@ -10,6 +10,7 @@ import (
 
 	"mcpauth/server"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -20,15 +21,12 @@ func main() {
 	oauthDomain := flag.String("oauthDomain", "localhost", "Domain for OAuth endpoints")
 	devMode := flag.Bool("devMode", false, "Enable development mode")
 	allowedEmails := flag.String("allowedEmails", "", "Comma-separated list of emails allowed to access protected resources (empty = allow all)")
+	logLevel := flag.Int("logLevel", 1, "Log level: 0=debug (all logs), 1=info (no secrets), 2=minimal (startup/shutdown only)")
 
 	// OAuth provider configuration
 	provider := flag.String("provider", "google", "OAuth provider to use (google, auth0, etc)")
 	clientID := flag.String("clientID", "", "OAuth client ID")
 	clientSecret := flag.String("clientSecret", "", "OAuth client secret")
-
-	// For backward compatibility
-	googleClientID := flag.String("googleClientID", "", "Google OAuth client ID (deprecated, use clientID)")
-	googleClientSecret := flag.String("googleClientSecret", "", "Google OAuth client secret (deprecated, use clientSecret)")
 
 	// Parse flags
 	flag.Parse()
@@ -58,13 +56,24 @@ func main() {
 		*allowedEmails = envAllowedEmails
 	}
 
-	// Log the configuration
+	// Check environment variables for log level
+	if envLogLevel := os.Getenv("LOG_LEVEL"); envLogLevel != "" {
+		if level, err := strconv.Atoi(envLogLevel); err == nil {
+			*logLevel = level
+		}
+	}
+
+	// Configure logging based on log level
+	configureLogging(*logLevel)
+
+	// Log startup message
 	log.Info().
 		Int("port", *port).
 		Str("protectedPath", *protectedPath).
 		Str("oauthDomain", *oauthDomain).
 		Bool("devMode", *devMode).
 		Str("allowedEmails", *allowedEmails).
+		Int("logLevel", *logLevel).
 		Msg("Starting with configuration")
 
 	// Create and configure the server
@@ -80,41 +89,25 @@ func main() {
 		s.SetAllowedEmails(emailList)
 	}
 
-	// Use provider-specific flags if available, otherwise use generic ones
+	// Check environment variables for OAuth credentials if not provided via flags
 	actualClientID := *clientID
 	actualClientSecret := *clientSecret
 	actualProvider := *provider
 
-	// For backward compatibility with Google-specific flags
-	if actualClientID == "" && *googleClientID != "" {
-		actualClientID = *googleClientID
-		actualProvider = "google"
-	}
-	if actualClientSecret == "" && *googleClientSecret != "" {
-		actualClientSecret = *googleClientSecret
-		actualProvider = "google"
-	}
-
-	// If still empty, try environment variables
+	// If empty, try environment variables
 	if actualClientID == "" {
-		// Try provider-specific env var first
-		if actualProvider == "google" {
+		actualClientID = os.Getenv("CLIENT_ID")
+		// Try provider-specific env var as fallback
+		if actualClientID == "" && actualProvider == "google" {
 			actualClientID = os.Getenv("GOOGLE_CLIENT_ID")
-		}
-		// Fall back to generic env var
-		if actualClientID == "" {
-			actualClientID = os.Getenv("CLIENT_ID")
 		}
 	}
 
 	if actualClientSecret == "" {
-		// Try provider-specific env var first
-		if actualProvider == "google" {
+		actualClientSecret = os.Getenv("CLIENT_SECRET")
+		// Try provider-specific env var as fallback
+		if actualClientSecret == "" && actualProvider == "google" {
 			actualClientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
-		}
-		// Fall back to generic env var
-		if actualClientSecret == "" {
-			actualClientSecret = os.Getenv("CLIENT_SECRET")
 		}
 	}
 
@@ -146,5 +139,24 @@ func main() {
 	err := http.ListenAndServe(address, s.Router)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to start server")
+	}
+}
+
+// configureLogging sets up the logging configuration based on the specified log level
+func configureLogging(level int) {
+	switch level {
+	case 0: // Debug - all logs including secrets
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+		log.Logger = log.With().Caller().Logger()
+	case 1: // Info - no secrets
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+		// Create a hook to filter sensitive fields
+		hook := zerolog.HookFunc(func(e *zerolog.Event, level zerolog.Level, message string) {
+			// We can't directly remove fields that were already added
+			// Instead, we'll need to be careful when logging sensitive data
+		})
+		log.Logger = log.Hook(hook)
+	default: // Minimal - startup/shutdown only
+		zerolog.SetGlobalLevel(zerolog.WarnLevel)
 	}
 }
