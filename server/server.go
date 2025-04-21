@@ -435,7 +435,7 @@ func (s *Server) tokenHandler(c *gin.Context) {
 
 	// TEMPORARY HACK: Accept any client ID
 	if _, clientExists := s.Clients[clientID]; !clientExists {
-		log.Warn().Str("client_id", clientID).Msg("TEMPORARY HACK: Accepting unknown client")
+		log.Warn().Str("client_id", clientID).Msg("TEMPORARY WORKAROUND for testing: Accepting unknown client")
 		// Create a temporary client
 		s.Clients[clientID] = Client{
 			ClientID:     clientID,
@@ -477,6 +477,14 @@ func (s *Server) tokenHandler(c *gin.Context) {
 			"error_description": "Client ID mismatch",
 		})
 		return
+	}
+
+	// If redirect URI is not provided in token request, use the one from the session
+	if redirectURI == "" {
+		log.Info().
+			Str("session_redirect_uri", sessionData.RedirectURI).
+			Msg("Using redirect URI from initial authorization request")
+		redirectURI = sessionData.RedirectURI
 	}
 
 	// Validate that the redirect URI matches
