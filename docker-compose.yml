@@ -9,7 +9,7 @@ services:
     command: [
       "-port=11000", 
       "-path=/sse", 
-      "-baseDomain=oauth.mcpgateway.online", 
+      "-baseDomain=oauth.yourdomain.com", 
       "-devMode=true",
       "-googleClientID=YOUR_GOOGLE_CLIENT_ID",
       "-googleClientSecret=YOUR_GOOGLE_CLIENT_SECRET"

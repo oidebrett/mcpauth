@@ -183,18 +183,22 @@ func (s *Server) oauthAuthorizationServerHandler(c *gin.Context) {
 	})
 }
 
-// optionsHandler handles preflight OPTIONS requests
+// optionsHandler handles preflight OPTIONS requests with proper CORS headers
 func (s *Server) optionsHandler(c *gin.Context) {
-	origin := c.Request.Header.Get("Origin")
+	origin := c.GetHeader("Origin")
 	if origin == "" {
-		origin = "*"
+		origin = "*" // fallback for non-browser clients
 	}
+
+	// CORS headers required by browser clients
 	c.Header("Access-Control-Allow-Origin", origin)
 	c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, mcp-protocol-version")
+	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, MCP-Protocol-Version")
 	c.Header("Access-Control-Allow-Credentials", "true")
-	c.Header("Access-Control-Max-Age", "86400")
-	c.Status(204)
+	c.Header("Access-Control-Max-Age", "86400") // Cache preflight for 1 day
+
+	// Send a 200 OK status
+	c.Status(http.StatusOK)
 }
 
 // registerHandler handles client registration

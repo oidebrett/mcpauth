@@ -1,6 +1,6 @@
 # MCP Auth Server
 
-A minimal Go application that returns a 401 Unauthorized response for MCP (Model Context Protocol) authentication.
+A minimal Go application that implement OAuth for MCP (Model Context Protocol) authentication.
 
 ## Requirements
 
@@ -365,7 +365,7 @@ If the middleware had been defined in Docker labels instead, it would be:
 
 ---
 
-### Quick Recap You Could Tell the User
+### Summary
 
 1. **Define the middleware** (in `dynamic_config.yml`):
     ```yaml
@@ -381,4 +381,50 @@ If the middleware had been defined in Docker labels instead, it would be:
     - "traefik.http.routers.myapp.middlewares=mymcpauth@file"
     ```
 
-Want me to give you a fully working docker-compose example for this setup too?
+### How to configure middleware manager
+
+#### Edit templates.yml and include
+```yaml
+# Add these middleware templates
+middlewares:
+  - id: mcp-auth
+    name: MCP Authentication
+    type: forwardAuth
+    config:
+      address: "http://mcpauth:11000/sse"
+      authResponseHeaders:
+        - "X-Forwarded-User"
+
+  - id: mcp-cors-headers
+    name: MCP CORS Headers
+    type: headers
+    config:
+      accessControlAllowMethods:
+        - GET
+        - POST
+        - OPTIONS
+      accessControlAllowOriginList:
+        - "*"
+      accessControlAllowHeaders:
+        - Authorization
+        - Content-Type
+        - mcp-protocol-version
+      accessControlMaxAge: 86400
+      accessControlAllowCredentials: true
+      addVaryHeader: true
+
+  - id: redirect-regex
+    name: Regex Redirect
+    type: redirectregex
+    config:
+      regex: "^https://([a-z0-9-]+).yourdomain.com/.well-known/oauth-authorization-server"
+      replacement: "https://oauth.yourdomain.com/.well-known/oauth-authorization-server"
+      permanent: true
+
+```
+
+#### Apply middleware (stritly in this order)
+
+- mcp-cors-headers@file
+- redirect-regex@file
+- mcp-auth@file
