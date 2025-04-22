@@ -614,5 +614,13 @@ func (s *Server) sseHandler(c *gin.Context) {
 
 	// Token is valid and email is authorized
 	log.Info().Str("email", userEmail).Msg("Authentication and authorization successful")
-	c.Status(http.StatusOK)
+
+	// Add X-Forwarded-User header with the authenticated user's email
+	c.Header("X-Forwarded-User", userEmail)
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(`You're authenticated as '`+userEmail+`'`))
+
+	//Removed this code
+	//c.Header("X-Forwarded-User", userEmail)
+	//c.Status(http.StatusOK)
+
 }
