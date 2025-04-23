@@ -1,7 +1,7 @@
 
 <div align="center">
   <h1>MCPAuth</h1>
-  <p><strong>OAuth2 Forward Auth for Traefik with MCP Gateway Integration</strong></p>
+  <p><strong>MCPAuth: Gateway Authentication for Secure Enterprise MCP Integrations</strong></p>
 
   <img src="https://img.shields.io/github/license/oidebrett/mcpauth" alt="License">
   <img src="https://img.shields.io/github/v/release/oidebrett/mcpauth" alt="Release">
@@ -9,7 +9,42 @@
   <img src="https://github.com/oidebrett/mcpauth/actions/workflows/ci.yml/badge.svg" alt="CI Status">
 </div>
 
+## 🔐 MCPAuth: Gateway Authentication for Secure Enterprise MCP Integrations
+
+**McpAuth** is the authentication and authorization component of the **MCP Gateway** Proof of Concept (PoC) described in the paper:
+
+> *Simplified and Secure MCP Gateways for Enterprise AI Integration*  
+> **Ivo Brett, CISSP, B.Eng, MSc**  
+> [View Paper](https://independent.academia.edu/ivobrett) (2025)
+
+This repository is part of a broader initiative to enable **secure, scalable, and compliant enterprise integration** with the **Model Context Protocol (MCP)**. It provides an extensible OAuth2.1-based authentication gateway that offloads identity, authorization, and policy management from backend MCP servers—ensuring conformance with the 2025-03-26 MCP Specification.
+
 ---
+
+### 🔍 Purpose
+
+McpAuth is designed to:
+- **Decouple security logic** from MCP servers
+- **Centralize identity management** using OAuth 2.1 & OIDC
+- Support **dynamic client registration**
+- Enforce **fine-grained token scopes and policy controls**
+- Act as a **composable module** in enterprise-grade Zero Trust architectures
+
+---
+
+### 📚 Background
+
+This implementation is part of a larger PoC that validates:
+- A reference **MCP Gateway architecture** for secure deployments
+- Threat model mapping aligned with frameworks such as MAESTRO and Narajala & Habler
+- Real-world compatibility with tools like Cloudflare Tunnels, WireGuard, Traefik, and CrowdSec
+
+The **full proof of concept** includes:
+- Two isolated MCP servers (local and cloud-based)
+- Secure tunneling via WireGuard and Pangolin
+- Centralized intrusion detection and observability
+- Seamless integration with Anthropic's MCP Inspector
+
 
 ## ✨ Features
 
