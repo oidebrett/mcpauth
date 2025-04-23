@@ -1,3 +1,4 @@
 ai/
 tinyauth/
 .env
+.venv/
