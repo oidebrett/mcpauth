@@ -20,7 +20,7 @@
 - 🧪 Includes a Python-based test server
 
 
-<img src="assets/MCPAuthFlow.png" width="50%"> 
+<img src="assets/MCPAuthFlow.png" width="80%"> 
 
 ---
 
