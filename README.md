@@ -19,6 +19,7 @@
 
 This repository is part of a broader initiative to enable **secure, scalable, and compliant enterprise integration** with the **Model Context Protocol (MCP)**. It provides an extensible OAuth2.1-based authentication gateway that offloads identity, authorization, and policy management from backend MCP servers—ensuring conformance with the 2025-03-26 MCP Specification.
 
+<img src="assets/resource_authorization.png" width="80%"> 
 ---
 
 ### 🔍 Purpose
@@ -38,8 +39,6 @@ This implementation is part of a larger PoC that validates:
 - A reference **MCP Gateway architecture** for secure deployments
 - Threat model mapping aligned with frameworks such as MAESTRO and Narajala & Habler
 - Real-world compatibility with tools like Cloudflare Tunnels, WireGuard, Traefik, and CrowdSec
-
-<img src="assets/resource_authorization.png" width="80%"> 
 
 The **full proof of concept** includes:
 - Two isolated MCP servers (local and cloud-based)
