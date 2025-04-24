@@ -17,7 +17,7 @@
 > **Ivo Brett, CISSP, B.Eng, MSc**  
 > [View Paper](https://independent.academia.edu/ivobrett) (2025)
 
-This repository is part of a broader initiative to enable **secure, scalable, and compliant enterprise integration** with the **Model Context Protocol (MCP)**. See the website <a href="SelfHostedMCP.com">SelfHostedMCP.com</a>. It provides an extensible OAuth2.1-based authentication gateway that offloads identity, authorization, and policy management from backend MCP servers—ensuring conformance with the 2025-03-26 MCP Specification.
+This repository is part of a broader initiative to enable **secure, scalable, and compliant enterprise integration** with the **Model Context Protocol (MCP)**. See the website <a href="htttps://SelfHostedMCP.com">SelfHostedMCP.com</a>. It provides an extensible OAuth2.1-based authentication gateway that offloads identity, authorization, and policy management from backend MCP servers—ensuring conformance with the 2025-03-26 MCP Specification.
 
 <img src="assets/resource_authorization.png" width="80%"> 
 ---
