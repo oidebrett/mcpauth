@@ -15,7 +15,7 @@
 
 > *Simplified and Secure MCP Gateways for Enterprise AI Integration*  
 > **Ivo Brett, CISSP, B.Eng, MSc**  
-> [View Paper](https://independent.academia.edu/ivobrett) (2025)
+> [View Paper](https://arxiv.org/pdf/2504.19997) (2025)
 
 This repository is part of a broader initiative to enable **secure, scalable, and compliant enterprise integration** with the **Model Context Protocol (MCP)**. See the website [SelfHostedMCP.com](https://selfhostedmcp.com). It provides an extensible OAuth2.1-based authentication gateway that offloads identity, authorization, and policy management from backend MCP servers—ensuring conformance with the 2025-03-26 MCP Specification.
 
