@@ -1,0 +1,104 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - dev
+    paths:
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - 'main.go'
+      - 'Makefile'
+      - '.github/workflows/**'
+      - 'server/**'
+
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  DOCKERHUB_IMAGE_NAME: oideibrett/mcpauth
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Debug trigger
+        run: |
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Ref name: ${{ github.ref_name }}"
+          echo "Branch: ${{ github.ref_type == 'branch' && github.ref_name || 'not a branch' }}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Get current date for image tags
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+      
+      # Prepare tags based on branch and version
+      - name: Prepare Docker tags
+        id: docker_tags
+        run: |
+          TAGS=""
+          
+          # Add branch-specific tags
+          if [[ "${{ github.ref_name }}" == "main" || "${{ github.ref_name }}" == "master" ]]; then
+            # For main/master branch, add latest tag
+            TAGS="$TAGS ${{ env.DOCKERHUB_IMAGE_NAME }}:latest"
+          elif [[ "${{ github.ref_name }}" == "dev" ]]; then
+            # For dev branch
+            TAGS="$TAGS ${{ env.DOCKERHUB_IMAGE_NAME }}:dev"
+          elif [[ "${{ github.ref_type }}" == "branch" ]]; then
+            # For other branches
+            TAGS="$TAGS ${{ env.DOCKERHUB_IMAGE_NAME }}:${{ github.ref_name }}"
+          fi
+          
+          # Add sha tag for all branches
+          if [[ "${{ github.ref_type }}" == "branch" ]]; then
+            TAGS="$TAGS,${{ env.DOCKERHUB_IMAGE_NAME }}:sha-${GITHUB_SHA::7}"
+          fi
+          
+          # Add version tag for tagged releases
+          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            
+            # Add full version tag
+            TAGS="$TAGS,${{ env.DOCKERHUB_IMAGE_NAME }}:$VERSION"
+          fi
+          
+          # Add date tag for all builds
+          TAGS="$TAGS,${{ env.DOCKERHUB_IMAGE_NAME }}:${{ steps.date.outputs.date }}"
+          
+          # Remove leading space or comma if present
+          TAGS=$(echo "$TAGS" | sed 's/^[ ,]*//')
+          
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "Docker tags: $TAGS"
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.docker_tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
