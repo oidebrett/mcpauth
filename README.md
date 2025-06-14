@@ -60,7 +60,67 @@ The **full proof of concept** includes:
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (assuming a completely standalone working environment)
+
+### Set Up Google OAuth
+Go to the Google Cloud Console
+Navigate to APIs & Services > Credentials
+Click Create Credentials → OAuth client ID
+Choose Web Application
+Add an Authorized redirect URI — you’ll get this later when you set up Traefik, but it will look like:
+https://oauth.yourdomain.com/callback
+
+Save the Client ID and Client Secret for later use.
+
+### Create .env file
+```
+CLIENT_ID=<INSERT_VALUE_FROM_GOOGLE>
+CLIENT_SECRET=<INSERT_VALUE_FROM_GOOGLE>
+```
+
+### 🔧 Note the Configuration Flags
+
+Use flags or environment variables:
+
+| Variable         | Default   | Description                              |
+|------------------|-----------|------------------------------------------|
+| `PORT`           | `11000`   | Port for the auth server                 |
+| `PROTECTED_PATH` | `/sse`    | Protected endpoint path                  |
+| `OAUTH_DOMAIN`   | *(none)*  | OAuth issuer domain                      |
+| `CLIENT_ID`      | *(none)*  | OAuth client ID                          |
+| `CLIENT_SECRET`  | *(none)*  | OAuth client secret                      |
+| `ALLOWED_EMAILS` | *(none)*  | Comma-separated list of allowed emails   |
+| `LOG_LEVEL`      | `1`       | 0=debug, 1=info, 2=minimal               |
+
+
+### Docker Compose
+
+```yaml
+services:
+  mcpauth:
+    image: oideibrett/mcpauth:latest
+    environment:
+      - PORT=11000
+      - CLIENT_ID=${CLIENT_ID}
+      - CLIENT_SECRET=${CLIENT_SECRET}
+    ports:
+      - "11000:11000"
+
+  traefik:
+    image: traefik::v3.4.1
+    command:
+      - "--providers.docker=true"
+      - "--entrypoints.websecure.address=:443"
+    ports:
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+```
+
+
+
+
+## 🚀 Developers Installation
 
 ### 📦 Prerequisites
 
@@ -75,20 +135,6 @@ git clone https://github.com/oidebrett/mcpauth
 cd mcpauth
 go mod tidy
 ```
-
-### 🔧 Configuration
-
-Use flags or environment variables:
-
-| Variable         | Default   | Description                              |
-|------------------|-----------|------------------------------------------|
-| `PORT`           | `11000`   | Port for the auth server                 |
-| `PROTECTED_PATH` | `/sse`    | Protected endpoint path                  |
-| `OAUTH_DOMAIN`   | *(none)*  | OAuth issuer domain                      |
-| `CLIENT_ID`      | *(none)*  | OAuth client ID                          |
-| `CLIENT_SECRET`  | *(none)*  | OAuth client secret                      |
-| `ALLOWED_EMAILS` | *(none)*  | Comma-separated list of allowed emails   |
-| `LOG_LEVEL`      | `1`       | 0=debug, 1=info, 2=minimal               |
 
 ```bash
 go run cmd/main.go -port=11000 -oauthDomain=your-domain.com

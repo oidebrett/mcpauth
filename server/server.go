@@ -116,6 +116,10 @@ func (s *Server) SetupRoutes() {
 	s.Router.GET("/.well-known/oauth-authorization-server", s.oauthAuthorizationServerHandler)
 	s.Router.OPTIONS("/.well-known/oauth-authorization-server", s.optionsHandler)
 
+	// Add OAuth protected resource metadata endpoint
+	s.Router.GET("/.well-known/oauth-protected-resource", s.oauthProtectedResourceHandler)
+	s.Router.OPTIONS("/.well-known/oauth-protected-resource", s.optionsHandler)
+
 	// Add OAuth client registration endpoint
 	s.Router.POST("/register", s.registerHandler)
 	s.Router.OPTIONS("/register", s.optionsHandler)
@@ -180,6 +184,43 @@ func (s *Server) oauthAuthorizationServerHandler(c *gin.Context) {
 		"token_endpoint_auth_methods_supported": []string{"none"},
 		"revocation_endpoint":                   fmt.Sprintf("%s://%s/token", protocol, s.OAuthDomain),
 		"code_challenge_methods_supported":      []string{"plain", "S256"},
+	})
+}
+
+// oauthProtectedResourceHandler returns OAuth protected resource metadata
+func (s *Server) oauthProtectedResourceHandler(c *gin.Context) {
+	log.Info().
+		Str("path", c.Request.URL.Path).
+		Str("domain", s.OAuthDomain).
+		Msg("Received OAuth protected resource metadata request")
+
+	// Set CORS headers
+	origin := c.Request.Header.Get("Origin")
+	if origin == "" {
+		origin = "*"
+	}
+	c.Header("Access-Control-Allow-Origin", origin)
+	c.Header("Access-Control-Allow-Methods", "GET, OPTIONS")
+	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, mcp-protocol-version")
+	c.Header("Access-Control-Allow-Credentials", "true")
+
+	protocol := "https"
+	if s.DevMode {
+		protocol = "http"
+	}
+
+	// Build the resource URL based on the protected path or default to root
+	resourceURL := fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)
+	if s.ProtectedPath != "" && s.ProtectedPath != "/" {
+		resourceURL = fmt.Sprintf("%s://%s%s", protocol, s.OAuthDomain, s.ProtectedPath)
+	}
+
+	// Return the protected resource metadata
+	c.JSON(200, gin.H{
+		"resource":              resourceURL,
+		"authorization_servers": []string{fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)},
+		"scopes_supported":      []string{"read", "write"},
+		"resource_name":         resourceURL,
 	})
 }
 
@@ -519,6 +560,17 @@ func (s *Server) tokenHandler(c *gin.Context) {
 	delete(s.Sessions, code)
 }
 
+// buildWWWAuthenticateHeader creates the WWW-Authenticate header with resource metadata URL
+func (s *Server) buildWWWAuthenticateHeader() string {
+	protocol := "https"
+	if s.DevMode {
+		protocol = "http"
+	}
+	
+	resourceMetadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", protocol, s.OAuthDomain)
+	return fmt.Sprintf("Bearer resource_metadata=\"%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
+}
+
 // sseHandler handles Server-Sent Events connections authentication
 func (s *Server) sseHandler(c *gin.Context) {
 	log.Info().
@@ -550,9 +602,9 @@ func (s *Server) sseHandler(c *gin.Context) {
 	} else if tokenParam != "" {
 		token = tokenParam
 	} else {
-		// No token provided, return 401 Unauthorized
+		// No token provided, return 401 Unauthorized with WWW-Authenticate header
 		log.Warn().Msg("Missing authorization token")
-		c.Header("WWW-Authenticate", "Bearer realm=\"mcpauth\"")
+		c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader())
 		c.JSON(401, gin.H{
 			"status":  401,
 			"message": "Unauthorized",
@@ -569,7 +621,7 @@ func (s *Server) sseHandler(c *gin.Context) {
 			// Check if token is expired
 			if time.Now().After(session.ExpiresAt) {
 				log.Warn().Msg("Token expired")
-				c.Header("WWW-Authenticate", "Bearer error=\"invalid_token\", error_description=\"The access token expired\"")
+				c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\", error_description=\"The access token expired\"")
 				c.JSON(401, gin.H{
 					"status":  401,
 					"message": "Token expired",
@@ -584,7 +636,7 @@ func (s *Server) sseHandler(c *gin.Context) {
 
 	if !valid {
 		log.Warn().Msg("Invalid token")
-		c.Header("WWW-Authenticate", "Bearer error=\"invalid_token\"")
+		c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\"")
 		c.JSON(401, gin.H{
 			"status":  401,
 			"message": "Invalid token",
@@ -604,6 +656,7 @@ func (s *Server) sseHandler(c *gin.Context) {
 
 		if !emailAllowed {
 			log.Warn().Str("email", userEmail).Msg("Email not in allowed list")
+			c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader())
 			c.JSON(401, gin.H{
 				"status":  401,
 				"message": "Email not in allowed list",
