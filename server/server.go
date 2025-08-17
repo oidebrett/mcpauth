@@ -28,7 +28,7 @@ type Client struct {
 // Server represents the OAuth server
 type Server struct {
 	Router        *gin.Engine
-	Sessions      map[string]SessionData
+	Sessions      *SessionStore
 	Clients       map[string]Client
 	Provider      providers.Provider
 	ProtectedPath string
@@ -52,11 +52,11 @@ type SessionData struct {
 
 // NewServer creates a new server instance
 func NewServer(protectedPath, oauthDomain string, devMode bool) *Server {
-	router := gin.Default()
+outer := gin.Default()
 
 	server := &Server{
 		Router:        router,
-		Sessions:      make(map[string]SessionData),
+		Sessions:      NewSessionStore(),
 		Clients:       make(map[string]Client),
 		ProtectedPath: protectedPath,
 		OAuthDomain:   oauthDomain, // Use the new name
@@ -351,13 +351,13 @@ func (s *Server) authorizeHandler(c *gin.Context) {
 	nonce := generateRandomString(32)
 
 	// Store session data
-	s.Sessions[state] = SessionData{
+	s.Sessions.SaveState(state, SessionData{
 		State:        state,
 		CodeVerifier: codeVerifier,
 		ClientID:     clientID,
 		RedirectURI:  redirectURI,
 		Nonce:        nonce,
-	}
+	})
 
 	log.Debug().Str("state", state).Msg("Stored session data")
 
@@ -379,7 +379,7 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	// Don't log the code as it's sensitive
 
 	// Validate state parameter to prevent CSRF
-	sessionData, exists := s.Sessions[state]
+	sessionData, exists := s.Sessions.GetByState(state)
 	if !exists {
 		log.Error().Str("state", state).Msg("Invalid state parameter")
 		c.JSON(400, gin.H{
@@ -420,10 +420,13 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	sessionData.IDToken = idToken
 	sessionData.Email = email
 	sessionData.ExpiresAt = time.Now().Add(time.Hour) // Approximate expiry
-	s.Sessions[state] = sessionData
 
-	// Store the code for token exchange
-	s.Sessions[code] = sessionData
+	// The code from the provider is passed to our client, which will exchange it for a token.
+	// We store the session data by this code.
+	s.Sessions.SaveCode(code, sessionData)
+
+	// The state has served its purpose and can be deleted.
+	s.Sessions.DeleteState(state)
 
 	log.Debug().Str("state", state).Str("code", code).Msg("Stored tokens in session")
 
@@ -497,7 +500,7 @@ func (s *Server) tokenHandler(c *gin.Context) {
 	}
 
 	// Find the session with this code
-	sessionData, found := s.Sessions[code]
+	sessionData, found := s.Sessions.GetByCode(code)
 	if !found {
 		log.Error().Str("code", code).Msg("Invalid authorization code")
 		c.JSON(400, gin.H{
@@ -548,6 +551,10 @@ func (s *Server) tokenHandler(c *gin.Context) {
 		Time("expires_at", sessionData.ExpiresAt).
 		Msg("Session data for token request")
 
+	// The token is now being given to the client.
+	// Store it for efficient lookup by the sseHandler.
+	s.Sessions.SaveToken(sessionData.AccessToken, sessionData)
+
 	// Return the tokens
 	c.JSON(200, gin.H{
 		"access_token": sessionData.AccessToken,
@@ -556,8 +563,8 @@ func (s *Server) tokenHandler(c *gin.Context) {
 		"id_token":     sessionData.IDToken,
 	})
 
-	// Clean up sessions after use
-	delete(s.Sessions, code)
+	// Clean up the one-time authorization code
+	s.Sessions.DeleteCode(code)
 }
 
 // buildWWWAuthenticateHeader creates the WWW-Authenticate header with resource metadata URL
@@ -566,9 +573,9 @@ func (s *Server) buildWWWAuthenticateHeader() string {
 	if s.DevMode {
 		protocol = "http"
 	}
-	
+
 	resourceMetadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", protocol, s.OAuthDomain)
-	return fmt.Sprintf("Bearer resource_metadata=\"%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
+	return fmt.Sprintf("Bearer resource_metadata=\"%%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
 }
 
 // sseHandler handles Server-Sent Events connections authentication
@@ -612,37 +619,21 @@ func (s *Server) sseHandler(c *gin.Context) {
 		return
 	}
 
-	// Validate the token by checking if it exists in any active session
-	valid := false
-	var userEmail string
-
-	for _, session := range s.Sessions {
-		if session.AccessToken == token {
-			// Check if token is expired
-			if time.Now().After(session.ExpiresAt) {
-				log.Warn().Msg("Token expired")
-				c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\", error_description=\"The access token expired\"")
-				c.JSON(401, gin.H{
-					"status":  401,
-					"message": "Token expired",
-				})
-				return
-			}
-			valid = true
-			userEmail = session.Email
-			break
-		}
-	}
-
-	if !valid {
-		log.Warn().Msg("Invalid token")
+	// Validate the token by checking if it exists in the session store.
+	// This is now an efficient O(1) lookup.
+	sessionData, ok := s.Sessions.GetByToken(token)
+	if !ok {
+		// Token not found or expired
+		log.Warn().Msg("Invalid or expired token")
 		c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\"")
 		c.JSON(401, gin.H{
 			"status":  401,
-			"message": "Invalid token",
+			"message": "Invalid or expired token",
 		})
 		return
 	}
+
+	userEmail := sessionData.Email
 
 	// Check if email is in the allowed list (if the list is not empty)
 	if len(s.AllowedEmails) > 0 {
