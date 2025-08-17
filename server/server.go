@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"mcpauth/server/providers"
@@ -31,7 +30,6 @@ type Server struct {
 	Sessions      *SessionStore
 	Clients       map[string]Client
 	Provider      providers.Provider
-	ProtectedPath string
 	OAuthDomain   string // Renamed from BaseDomain
 	DevMode       bool
 	AllowedEmails []string // List of emails allowed to access protected resources
@@ -51,14 +49,13 @@ type SessionData struct {
 }
 
 // NewServer creates a new server instance
-func NewServer(protectedPath, oauthDomain string, devMode bool) *Server {
-outer := gin.Default()
+func NewServer(oauthDomain string, devMode bool) *Server {
+	router := gin.Default()
 
 	server := &Server{
 		Router:        router,
 		Sessions:      NewSessionStore(),
 		Clients:       make(map[string]Client),
-		ProtectedPath: protectedPath,
 		OAuthDomain:   oauthDomain, // Use the new name
 		DevMode:       devMode,
 		AllowedEmails: []string{}, // Initialize empty allowed emails list
@@ -93,21 +90,19 @@ func (s *Server) ConfigureProvider(providerName, clientID, clientSecret, redirec
 
 // SetupRoutes configures all the routes for the server
 func (s *Server) SetupRoutes() {
-	// Only add debug logging middleware if we're at debug level
-	if zerolog.GlobalLevel() <= zerolog.DebugLevel {
-		s.Router.Use(func(c *gin.Context) {
-			log.Debug().
-				Str("path", c.Request.URL.Path).
-				Str("method", c.Request.Method).
-				Str("query", c.Request.URL.RawQuery).
-				Msg("Incoming request before handler")
-			c.Next()
-			log.Debug().
-				Str("path", c.Request.URL.Path).
-				Int("status", c.Writer.Status()).
-				Msg("Outgoing response after handler")
-		})
-	}
+	// Middleware to log all incoming requests
+	s.Router.Use(func(c *gin.Context) {
+		log.Info().
+			Str("path", c.Request.URL.Path).
+			Str("method", c.Request.Method).
+			Str("query", c.Request.URL.RawQuery).
+			Msg("Incoming request")
+		c.Next()
+		log.Info().
+			Str("path", c.Request.URL.Path).
+			Int("status", c.Writer.Status()).
+			Msg("Outgoing response")
+	})
 
 	// Add a health check endpoint
 	s.Router.GET("/health", s.healthCheckHandler)
@@ -131,15 +126,8 @@ func (s *Server) SetupRoutes() {
 	s.Router.POST("/token", s.tokenHandler)
 	s.Router.OPTIONS("/token", s.optionsHandler)
 
-	// Add SSE endpoint or protected path (not both)
-	if s.ProtectedPath == "/sse" {
-		s.Router.GET("/sse", s.sseHandler)
-	} else {
-		// Register protected path if it's different from /sse
-		if s.ProtectedPath != "" {
-			s.Router.GET(s.ProtectedPath, s.sseHandler)
-		}
-	}
+	// Generic auth handler for forwardAuth
+	s.Router.Any("/auth", s.authHandler)
 }
 
 // healthCheckHandler returns a 200 OK response
@@ -209,11 +197,8 @@ func (s *Server) oauthProtectedResourceHandler(c *gin.Context) {
 		protocol = "http"
 	}
 
-	// Build the resource URL based on the protected path or default to root
+	// The resource is the gateway itself, so we point to the root.
 	resourceURL := fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)
-	if s.ProtectedPath != "" && s.ProtectedPath != "/" {
-		resourceURL = fmt.Sprintf("%s://%s%s", protocol, s.OAuthDomain, s.ProtectedPath)
-	}
 
 	// Return the protected resource metadata
 	c.JSON(200, gin.H{
@@ -578,8 +563,8 @@ func (s *Server) buildWWWAuthenticateHeader() string {
 	return fmt.Sprintf("Bearer resource_metadata=\"%%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
 }
 
-// sseHandler handles Server-Sent Events connections authentication
-func (s *Server) sseHandler(c *gin.Context) {
+// authHandler handles Server-Sent Events connections authentication
+func (s *Server) authHandler(c *gin.Context) {
 	log.Info().
 		Str("path", c.Request.URL.Path).
 		Str("query", c.Request.URL.RawQuery).

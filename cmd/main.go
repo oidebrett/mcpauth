@@ -17,7 +17,6 @@ import (
 func main() {
 	// Define command line flags
 	port := flag.Int("port", 11000, "Port to run the server on")
-	protectedPath := flag.String("protectedPath", "/sse", "Path to protect with authentication")
 	oauthDomain := flag.String("oauthDomain", "localhost", "Domain for OAuth endpoints")
 	devMode := flag.Bool("devMode", false, "Enable development mode")
 	allowedEmails := flag.String("allowedEmails", "", "Comma-separated list of emails allowed to access protected resources (empty = allow all)")
@@ -36,11 +35,6 @@ func main() {
 		if p, err := strconv.Atoi(envPort); err == nil {
 			*port = p
 		}
-	}
-
-	// Use PROTECTED_PATH instead of PATH to avoid system PATH variable conflict
-	if envPath := os.Getenv("PROTECTED_PATH"); envPath != "" {
-		*protectedPath = envPath
 	}
 
 	if envDomain := os.Getenv("OAUTH_DOMAIN"); envDomain != "" {
@@ -69,7 +63,6 @@ func main() {
 	// Log startup message
 	log.Info().
 		Int("port", *port).
-		Str("protectedPath", *protectedPath).
 		Str("oauthDomain", *oauthDomain).
 		Bool("devMode", *devMode).
 		Str("allowedEmails", *allowedEmails).
@@ -77,7 +70,7 @@ func main() {
 		Msg("Starting with configuration")
 
 	// Create and configure the server
-	s := server.NewServer(*protectedPath, *oauthDomain, *devMode)
+	s := server.NewServer(*oauthDomain, *devMode)
 
 	// Configure allowed emails if provided
 	if *allowedEmails != "" {
@@ -134,7 +127,7 @@ func main() {
 
 	// Start the server
 	address := fmt.Sprintf(":%d", *port)
-	log.Info().Str("address", address).Str("path", *protectedPath).Msg("Starting server")
+	log.Info().Str("address", address).Msg("Starting server")
 
 	err := http.ListenAndServe(address, s.Router)
 	if err != nil {
