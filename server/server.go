@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"mcpauth/server/providers"
@@ -27,14 +26,15 @@ type Client struct {
 
 // Server represents the OAuth server
 type Server struct {
-	Router        *gin.Engine
-	Sessions      map[string]SessionData
-	Clients       map[string]Client
-	Provider      providers.Provider
-	ProtectedPath string
-	OAuthDomain   string // Renamed from BaseDomain
-	DevMode       bool
-	AllowedEmails []string // List of emails allowed to access protected resources
+	Router         *gin.Engine
+	Sessions       *SessionStore
+	Clients        map[string]Client
+	Provider       providers.Provider
+	OAuthDomain    string // Renamed from BaseDomain
+	DevMode        bool
+	AllowedEmails  []string // List of emails allowed to access protected resources
+	AllowedScopes  []string // list of scopes middleware is allowed to request
+	RequiredScopes []string // list of scopes that must be present in tokens
 }
 
 // SessionData stores OAuth state and session information
@@ -48,21 +48,31 @@ type SessionData struct {
 	IDToken      string
 	ExpiresAt    time.Time
 	Email        string // Store the user's email
+	Scopes       []string
 }
 
 // NewServer creates a new server instance
-func NewServer(protectedPath, oauthDomain string, devMode bool) *Server {
+func NewServer(oauthDomain string, devMode bool) *Server {
 	router := gin.Default()
 
 	server := &Server{
 		Router:        router,
-		Sessions:      make(map[string]SessionData),
+		Sessions:      NewSessionStore(),
 		Clients:       make(map[string]Client),
-		ProtectedPath: protectedPath,
 		OAuthDomain:   oauthDomain, // Use the new name
 		DevMode:       devMode,
 		AllowedEmails: []string{}, // Initialize empty allowed emails list
 	}
+
+	// Start background cleanup of expired sessions
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			log.Debug().Msg("Running cleanup of expired sessions")
+			server.Sessions.CleanupExpired()
+		}
+	}()
 
 	// Set up all routes
 	server.SetupRoutes()
@@ -74,6 +84,16 @@ func NewServer(protectedPath, oauthDomain string, devMode bool) *Server {
 func (s *Server) SetAllowedEmails(emails []string) {
 	s.AllowedEmails = emails
 	log.Info().Strs("allowed_emails", emails).Msg("Configured allowed emails")
+}
+
+// SetScopes sets the allowed and required scopes for the server
+func (s *Server) SetScopes(allowed, required []string) {
+	s.AllowedScopes = allowed
+	s.RequiredScopes = required
+	log.Info().
+		Strs("allowed_scopes", allowed).
+		Strs("required_scopes", required).
+		Msg("Configured OAuth scopes")
 }
 
 // ConfigureProvider sets up the specified OAuth provider
@@ -93,21 +113,19 @@ func (s *Server) ConfigureProvider(providerName, clientID, clientSecret, redirec
 
 // SetupRoutes configures all the routes for the server
 func (s *Server) SetupRoutes() {
-	// Only add debug logging middleware if we're at debug level
-	if zerolog.GlobalLevel() <= zerolog.DebugLevel {
-		s.Router.Use(func(c *gin.Context) {
-			log.Debug().
-				Str("path", c.Request.URL.Path).
-				Str("method", c.Request.Method).
-				Str("query", c.Request.URL.RawQuery).
-				Msg("Incoming request before handler")
-			c.Next()
-			log.Debug().
-				Str("path", c.Request.URL.Path).
-				Int("status", c.Writer.Status()).
-				Msg("Outgoing response after handler")
-		})
-	}
+	// Middleware to log all incoming requests
+	s.Router.Use(func(c *gin.Context) {
+		log.Info().
+			Str("path", c.Request.URL.Path).
+			Str("method", c.Request.Method).
+			Str("query", c.Request.URL.RawQuery).
+			Msg("Incoming request")
+		c.Next()
+		log.Info().
+			Str("path", c.Request.URL.Path).
+			Int("status", c.Writer.Status()).
+			Msg("Outgoing response")
+	})
 
 	// Add a health check endpoint
 	s.Router.GET("/health", s.healthCheckHandler)
@@ -131,15 +149,8 @@ func (s *Server) SetupRoutes() {
 	s.Router.POST("/token", s.tokenHandler)
 	s.Router.OPTIONS("/token", s.optionsHandler)
 
-	// Add SSE endpoint or protected path (not both)
-	if s.ProtectedPath == "/sse" {
-		s.Router.GET("/sse", s.sseHandler)
-	} else {
-		// Register protected path if it's different from /sse
-		if s.ProtectedPath != "" {
-			s.Router.GET(s.ProtectedPath, s.sseHandler)
-		}
-	}
+	// Generic auth handler for forwardAuth
+	s.Router.Any("/auth", s.authHandler)
 }
 
 // healthCheckHandler returns a 200 OK response
@@ -209,11 +220,8 @@ func (s *Server) oauthProtectedResourceHandler(c *gin.Context) {
 		protocol = "http"
 	}
 
-	// Build the resource URL based on the protected path or default to root
+	// The resource is the gateway itself, so we point to the root.
 	resourceURL := fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)
-	if s.ProtectedPath != "" && s.ProtectedPath != "/" {
-		resourceURL = fmt.Sprintf("%s://%s%s", protocol, s.OAuthDomain, s.ProtectedPath)
-	}
 
 	// Return the protected resource metadata
 	c.JSON(200, gin.H{
@@ -351,18 +359,22 @@ func (s *Server) authorizeHandler(c *gin.Context) {
 	nonce := generateRandomString(32)
 
 	// Store session data
-	s.Sessions[state] = SessionData{
+	s.Sessions.SaveState(state, SessionData{
 		State:        state,
 		CodeVerifier: codeVerifier,
 		ClientID:     clientID,
 		RedirectURI:  redirectURI,
 		Nonce:        nonce,
-	}
+	})
 
 	log.Debug().Str("state", state).Msg("Stored session data")
 
 	// Redirect to OAuth provider
-	authURL := s.Provider.GetAuthURL(state, codeVerifier, nonce)
+	var requestedScopes []string
+	if scope != "" {
+		requestedScopes = strings.Split(scope, " ")
+	}
+	authURL := s.Provider.GetAuthURL(state, codeVerifier, nonce, requestedScopes)
 	c.Redirect(http.StatusTemporaryRedirect, authURL)
 }
 
@@ -379,7 +391,7 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	// Don't log the code as it's sensitive
 
 	// Validate state parameter to prevent CSRF
-	sessionData, exists := s.Sessions[state]
+	sessionData, exists := s.Sessions.GetByState(state)
 	if !exists {
 		log.Error().Str("state", state).Msg("Invalid state parameter")
 		c.JSON(400, gin.H{
@@ -390,7 +402,7 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	}
 
 	// Exchange the authorization code for tokens
-	accessToken, idToken, err := s.Provider.ExchangeToken(code, sessionData.CodeVerifier)
+	accessToken, idToken, scopes, err := s.Provider.ExchangeToken(code, sessionData.CodeVerifier)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to exchange token")
 		c.JSON(500, gin.H{"error": "server_error"})
@@ -419,11 +431,15 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	sessionData.AccessToken = accessToken
 	sessionData.IDToken = idToken
 	sessionData.Email = email
+	sessionData.Scopes = scopes
 	sessionData.ExpiresAt = time.Now().Add(time.Hour) // Approximate expiry
-	s.Sessions[state] = sessionData
 
-	// Store the code for token exchange
-	s.Sessions[code] = sessionData
+	// The code from the provider is passed to our client, which will exchange it for a token.
+	// We store the session data by this code.
+	s.Sessions.SaveCode(code, sessionData)
+
+	// The state has served its purpose and can be deleted.
+	s.Sessions.DeleteState(state)
 
 	log.Debug().Str("state", state).Str("code", code).Msg("Stored tokens in session")
 
@@ -497,7 +513,7 @@ func (s *Server) tokenHandler(c *gin.Context) {
 	}
 
 	// Find the session with this code
-	sessionData, found := s.Sessions[code]
+	sessionData, found := s.Sessions.GetByCode(code)
 	if !found {
 		log.Error().Str("code", code).Msg("Invalid authorization code")
 		c.JSON(400, gin.H{
@@ -548,6 +564,10 @@ func (s *Server) tokenHandler(c *gin.Context) {
 		Time("expires_at", sessionData.ExpiresAt).
 		Msg("Session data for token request")
 
+	// The token is now being given to the client.
+	// Store it for efficient lookup by the sseHandler.
+	s.Sessions.SaveToken(sessionData.AccessToken, sessionData)
+
 	// Return the tokens
 	c.JSON(200, gin.H{
 		"access_token": sessionData.AccessToken,
@@ -556,8 +576,8 @@ func (s *Server) tokenHandler(c *gin.Context) {
 		"id_token":     sessionData.IDToken,
 	})
 
-	// Clean up sessions after use
-	delete(s.Sessions, code)
+	// Clean up the one-time authorization code
+	s.Sessions.DeleteCode(code)
 }
 
 // buildWWWAuthenticateHeader creates the WWW-Authenticate header with resource metadata URL
@@ -566,21 +586,38 @@ func (s *Server) buildWWWAuthenticateHeader() string {
 	if s.DevMode {
 		protocol = "http"
 	}
-	
+
 	resourceMetadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", protocol, s.OAuthDomain)
-	return fmt.Sprintf("Bearer resource_metadata=\"%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
+	return fmt.Sprintf("Bearer resource_metadata=\"%%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
 }
 
-// sseHandler handles Server-Sent Events connections authentication
-func (s *Server) sseHandler(c *gin.Context) {
+// hasRequiredScopes checks if the session has all the required scopes
+func (s *Server) hasRequiredScopes(session SessionData) bool {
+	if len(s.RequiredScopes) == 0 {
+		return true
+	}
+	granted := make(map[string]struct{})
+	for _, sc := range session.Scopes {
+		granted[sc] = struct{}{}
+	}
+	for _, req := range s.RequiredScopes {
+		if _, ok := granted[req]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// authHandler handles Server-Sent Events connections authentication
+func (s *Server) authHandler(c *gin.Context) {
 	log.Info().
 		Str("path", c.Request.URL.Path).
 		Str("query", c.Request.URL.RawQuery).
 		Str("user_agent", c.Request.UserAgent()).
 		Str("referer", c.Request.Referer()).
-		Msg("Received SSE auth request")
+		Msg("Received MCP auth request")
 
-	// Set CORS headers for the SSE endpoint
+	// Set CORS headers for the MCP endpoint
 	origin := c.Request.Header.Get("Origin")
 	if origin == "" {
 		origin = "*"
@@ -612,37 +649,29 @@ func (s *Server) sseHandler(c *gin.Context) {
 		return
 	}
 
-	// Validate the token by checking if it exists in any active session
-	valid := false
-	var userEmail string
-
-	for _, session := range s.Sessions {
-		if session.AccessToken == token {
-			// Check if token is expired
-			if time.Now().After(session.ExpiresAt) {
-				log.Warn().Msg("Token expired")
-				c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\", error_description=\"The access token expired\"")
-				c.JSON(401, gin.H{
-					"status":  401,
-					"message": "Token expired",
-				})
-				return
-			}
-			valid = true
-			userEmail = session.Email
-			break
-		}
-	}
-
-	if !valid {
-		log.Warn().Msg("Invalid token")
+	// Validate the token by checking if it exists in the session store.
+	// This is now an efficient O(1) lookup.
+	sessionData, ok := s.Sessions.GetByToken(token)
+	if !ok {
+		// Token not found or expired
+		log.Warn().Msg("Invalid or expired token")
 		c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\"")
 		c.JSON(401, gin.H{
 			"status":  401,
-			"message": "Invalid token",
+			"message": "Invalid or expired token",
 		})
 		return
 	}
+
+	// Check if the session has the required scopes
+	if !s.hasRequiredScopes(sessionData) {
+		log.Warn().Strs("granted_scopes", sessionData.Scopes).Strs("required_scopes", s.RequiredScopes).Msg("Missing required scopes")
+		c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"insufficient_scope\"")
+		c.JSON(403, gin.H{"status": 403, "message": "Insufficient scope"})
+		return
+	}
+
+	userEmail := sessionData.Email
 
 	// Check if email is in the allowed list (if the list is not empty)
 	if len(s.AllowedEmails) > 0 {

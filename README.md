@@ -19,7 +19,7 @@
 
 This repository is part of a broader initiative to enable **secure, scalable, and compliant enterprise integration** with the **Model Context Protocol (MCP)**. See the website [SelfHostedMCP.com](https://selfhostedmcp.com). It provides an extensible OAuth2.1-based authentication gateway that offloads identity, authorization, and policy management from backend MCP servers—ensuring conformance with the 2025-03-26 MCP Specification.
 
-<img src="assets/resource_authorization.png" width="80%"> 
+<img src="assets/resource_authorization.png" width="80%"/> 
 ---
 
 ### 🔍 Purpose
@@ -56,7 +56,7 @@ The **full proof of concept** includes:
 - 🧪 Includes a Python-based test server
 
 
-<img src="assets/MCPAuthFlow.png" width="80%"> 
+<img src="assets/MCPAuthFlow.png" width="80%"/> 
 
 ---
 
@@ -93,6 +93,30 @@ Use flags or environment variables:
 | `LOG_LEVEL`      | `1`       | 0=debug, 1=info, 2=minimal               |
 
 
+### 🛡️ Scope Configuration
+
+MCPAuth supports fine-grained scope control to enhance security by limiting token privileges. You can define which scopes are allowed in an OAuth request and which are required for a token to be considered valid.
+
+- **Allowed Scopes**: A whitelist of scopes that the middleware is permitted to request from the OAuth provider. If a client requests scopes not in this list, they will be ignored.
+- **Required Scopes**: A list of scopes that *must* be present in the granted token after the user authenticates. If the token does not contain all of these scopes, access will be denied with a `403 Forbidden (Insufficient Scope)` error.
+
+This allows you to enforce policies like requiring an `email` scope for all users while allowing clients to optionally request additional permissions like `profile` or custom API scopes.
+
+#### Configuration
+
+You can configure scopes using command-line flags or environment variables:
+
+| Variable           | Flag                | Description                                  |
+|--------------------|---------------------|----------------------------------------------|
+| `ALLOWED_SCOPES`   | `-allowedScopes`    | Comma-separated list of allowed OAuth scopes.  |
+| `REQUIRED_SCOPES`  | `-requiredScopes`   | Comma-separated list of required OAuth scopes. |
+
+**Example:**
+To allow clients to request `openid`, `email`, and `profile` scopes, but require that all valid tokens include at least `openid` and `email`, you would set:
+- `ALLOWED_SCOPES=openid,email,profile`
+- `REQUIRED_SCOPES=openid,email`
+
+
 ### Docker Compose
 
 ```yaml
@@ -119,7 +143,6 @@ services:
 
 
 
-
 ## 🚀 Developers Installation
 
 ### 📦 Prerequisites
@@ -142,7 +165,14 @@ go run cmd/main.go -port=11000 -oauthDomain=your-domain.com
 
 ---
 
+
 ## 🐳 Docker Deployment
+
+### Docker build
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 -t oideibrett/mcpauth:dev --push .
+```
 
 ### Basic Docker Compose
 
@@ -160,6 +190,7 @@ services:
 
 ---
 
+
 ## 🔐 Traefik Integration
 
 ### ForwardAuth Middleware
@@ -169,7 +200,7 @@ http:
   middlewares:
     mcp-auth:
       forwardAuth:
-        address: "http://mcpauth:11000/sse"
+        address: "http://mcpauth:11000/auth"
         authResponseHeaders:
           - "X-Forwarded-User"
 ```
@@ -182,6 +213,7 @@ labels:
 ```
 
 ---
+
 
 ## 🧪 Testing
 
@@ -197,12 +229,56 @@ python mcp-server-sse.py
 
 ### With `curl`
 
+Here are a few `curl` commands to test different authentication and authorization scenarios.
+
+**1. Health Check**
+
+This command checks if the `mcpauth` service is running and responsive. You should receive a `200 OK` response.
+
 ```bash
 curl -i http://localhost:11000/health
-curl -i http://localhost:11000/sse
 ```
 
+**2. Accessing a Protected Endpoint (No Token)**
+
+When you try to access a protected endpoint like `/sse` without a valid token, `mcpauth` should initiate the OAuth2 authentication flow. For a non-browser client like `curl`, this will result in a `302 Found` redirect to the Google login page.
+
+```bash
+curl -i http://localhost:11000/sse
+```
+*Expected Output:* An HTTP `302 Found` redirecting to `https://accounts.google.com/...
+
+**3. Accessing a Protected Endpoint (Valid Token)**
+
+Once you have a valid bearer token from the OAuth provider, you can use it to access the protected endpoint. This request should be successful (`200 OK`), and `mcpauth` will forward the request to the upstream service.
+
+```bash
+# Replace YOUR_VALID_TOKEN with an actual bearer token
+curl -i -H "Authorization: Bearer YOUR_VALID_TOKEN" http://localhost:11000/sse
+```
+*Expected Output:* An HTTP `200 OK` and the response from the test server (e.g., the SSE stream).
+
+**4. Accessing a Protected Endpoint (Invalid/Expired Token)**
+
+If you use a token that is invalid, malformed, or expired, `mcpauth` should deny access. This will likely result in a `401 Unauthorized` error, prompting for re-authentication.
+
+```bash
+curl -i -H "Authorization: Bearer INVALID_TOKEN" http://localhost:11000/sse
+```
+*Expected Output:* An HTTP `401 Unauthorized` response.
+
+**5. Accessing with a Token from an Unauthorized User**
+
+If the `ALLOWED_EMAILS` list is configured, `mcpauth` will validate the user's email from the token. If the user is not on the whitelist, access will be denied.
+
+```bash
+# Use a valid token from a user whose email is NOT in ALLOWED_EMAILS
+curl -i -H "Authorization: Bearer TOKEN_FROM_UNAUTHORIZED_USER" http://localhost:11000/sse
+```
+*Expected Output:* An HTTP `403 Forbidden` response.
+
 ---
+
 
 ## 🧱 Middleware Chain (Traefik)
 
@@ -235,7 +311,7 @@ http:
 
     redirect-regex:
       redirectRegex:
-        regex: "^https://([a-z0-9-]+)\\.(.+)/\\.well-known/(.+)"
+        regex: "^https://([a-z0-9-]+)\.(.+)/\.well-known/(.+)"
         replacement: "https://oauth.${2}/.well-known/${3}"
         permanent: true
 
@@ -247,6 +323,7 @@ http:
 ```
 
 ---
+
 
 ## 🧠 Middleware Manager Support
 
@@ -286,16 +363,15 @@ middlewares:
     name: Regex Redirect
     type: redirectregex
     config:
-      regex: "^https://([a-z0-9-]+)\\.yourdomain\\.com/\\.well-known/oauth-authorization-server"
+      regex: "^https://([a-z0-9-]+)\.yourdomain\.com/\.well-known/oauth-authorization-server"
       replacement: "https://oauth.yourdomain.com/.well-known/oauth-authorization-server"
       permanent: true
 ```
 
 ---
 
+
 ## 📜 License
 
 Licensed under the [GNU General Public License v3.0](LICENSE).
-
-```
 

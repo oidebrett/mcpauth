@@ -17,11 +17,12 @@ import (
 func main() {
 	// Define command line flags
 	port := flag.Int("port", 11000, "Port to run the server on")
-	protectedPath := flag.String("protectedPath", "/sse", "Path to protect with authentication")
 	oauthDomain := flag.String("oauthDomain", "localhost", "Domain for OAuth endpoints")
 	devMode := flag.Bool("devMode", false, "Enable development mode")
 	allowedEmails := flag.String("allowedEmails", "", "Comma-separated list of emails allowed to access protected resources (empty = allow all)")
 	logLevel := flag.Int("logLevel", 1, "Log level: 0=debug (all logs), 1=info (no secrets), 2=minimal (startup/shutdown only)")
+	allowedScopes := flag.String("allowedScopes", "", "Comma-separated list of allowed OAuth scopes")
+	requiredScopes := flag.String("requiredScopes", "", "Comma-separated list of required OAuth scopes")
 
 	// OAuth provider configuration
 	provider := flag.String("provider", "google", "OAuth provider to use (google, auth0, etc)")
@@ -36,11 +37,6 @@ func main() {
 		if p, err := strconv.Atoi(envPort); err == nil {
 			*port = p
 		}
-	}
-
-	// Use PROTECTED_PATH instead of PATH to avoid system PATH variable conflict
-	if envPath := os.Getenv("PROTECTED_PATH"); envPath != "" {
-		*protectedPath = envPath
 	}
 
 	if envDomain := os.Getenv("OAUTH_DOMAIN"); envDomain != "" {
@@ -63,13 +59,20 @@ func main() {
 		}
 	}
 
+	// Check environment variables for scopes
+	if envAllowedScopes := os.Getenv("ALLOWED_SCOPES"); envAllowedScopes != "" {
+		*allowedScopes = envAllowedScopes
+	}
+	if envRequiredScopes := os.Getenv("REQUIRED_SCOPES"); envRequiredScopes != "" {
+		*requiredScopes = envRequiredScopes
+	}
+
 	// Configure logging based on log level
 	configureLogging(*logLevel)
 
 	// Log startup message
 	log.Info().
 		Int("port", *port).
-		Str("protectedPath", *protectedPath).
 		Str("oauthDomain", *oauthDomain).
 		Bool("devMode", *devMode).
 		Str("allowedEmails", *allowedEmails).
@@ -77,7 +80,7 @@ func main() {
 		Msg("Starting with configuration")
 
 	// Create and configure the server
-	s := server.NewServer(*protectedPath, *oauthDomain, *devMode)
+	s := server.NewServer(*oauthDomain, *devMode)
 
 	// Configure allowed emails if provided
 	if *allowedEmails != "" {
@@ -87,6 +90,19 @@ func main() {
 			emailList[i] = strings.TrimSpace(email)
 		}
 		s.SetAllowedEmails(emailList)
+	}
+
+	// Configure scopes if provided
+	if *allowedScopes != "" || *requiredScopes != "" {
+		allowed := strings.Split(*allowedScopes, ",")
+		required := strings.Split(*requiredScopes, ",")
+		for i, s := range allowed {
+			allowed[i] = strings.TrimSpace(s)
+		}
+		for i, s := range required {
+			required[i] = strings.TrimSpace(s)
+		}
+		s.SetScopes(allowed, required)
 	}
 
 	// Check environment variables for OAuth credentials if not provided via flags
@@ -134,7 +150,7 @@ func main() {
 
 	// Start the server
 	address := fmt.Sprintf(":%d", *port)
-	log.Info().Str("address", address).Str("path", *protectedPath).Msg("Starting server")
+	log.Info().Str("address", address).Msg("Starting server")
 
 	err := http.ListenAndServe(address, s.Router)
 	if err != nil {

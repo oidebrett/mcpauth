@@ -2,8 +2,8 @@ package providers
 
 // Provider defines the interface that all OAuth providers must implement
 type Provider interface {
-	GetAuthURL(state string, codeVerifier string, nonce string) string
-	ExchangeToken(code string, codeVerifier string) (string, string, error)
+	GetAuthURL(state string, codeVerifier string, nonce string, scopes []string) string
+	ExchangeToken(code string, codeVerifier string) (string, string, []string, error)
 	GetUserInfo(accessToken string) (map[string]interface{}, error)
 }
 
