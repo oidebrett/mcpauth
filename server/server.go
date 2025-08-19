@@ -26,13 +26,15 @@ type Client struct {
 
 // Server represents the OAuth server
 type Server struct {
-	Router        *gin.Engine
-	Sessions      *SessionStore
-	Clients       map[string]Client
-	Provider      providers.Provider
-	OAuthDomain   string // Renamed from BaseDomain
-	DevMode       bool
-	AllowedEmails []string // List of emails allowed to access protected resources
+	Router         *gin.Engine
+	Sessions       *SessionStore
+	Clients        map[string]Client
+	Provider       providers.Provider
+	OAuthDomain    string // Renamed from BaseDomain
+	DevMode        bool
+	AllowedEmails  []string // List of emails allowed to access protected resources
+	AllowedScopes  []string // list of scopes middleware is allowed to request
+	RequiredScopes []string // list of scopes that must be present in tokens
 }
 
 // SessionData stores OAuth state and session information
@@ -46,6 +48,7 @@ type SessionData struct {
 	IDToken      string
 	ExpiresAt    time.Time
 	Email        string // Store the user's email
+	Scopes       []string
 }
 
 // NewServer creates a new server instance
@@ -61,6 +64,16 @@ func NewServer(oauthDomain string, devMode bool) *Server {
 		AllowedEmails: []string{}, // Initialize empty allowed emails list
 	}
 
+	// Start background cleanup of expired sessions
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			log.Debug().Msg("Running cleanup of expired sessions")
+			server.Sessions.CleanupExpired()
+		}
+	}()
+
 	// Set up all routes
 	server.SetupRoutes()
 
@@ -71,6 +84,16 @@ func NewServer(oauthDomain string, devMode bool) *Server {
 func (s *Server) SetAllowedEmails(emails []string) {
 	s.AllowedEmails = emails
 	log.Info().Strs("allowed_emails", emails).Msg("Configured allowed emails")
+}
+
+// SetScopes sets the allowed and required scopes for the server
+func (s *Server) SetScopes(allowed, required []string) {
+	s.AllowedScopes = allowed
+	s.RequiredScopes = required
+	log.Info().
+		Strs("allowed_scopes", allowed).
+		Strs("required_scopes", required).
+		Msg("Configured OAuth scopes")
 }
 
 // ConfigureProvider sets up the specified OAuth provider
@@ -347,7 +370,11 @@ func (s *Server) authorizeHandler(c *gin.Context) {
 	log.Debug().Str("state", state).Msg("Stored session data")
 
 	// Redirect to OAuth provider
-	authURL := s.Provider.GetAuthURL(state, codeVerifier, nonce)
+	var requestedScopes []string
+	if scope != "" {
+		requestedScopes = strings.Split(scope, " ")
+	}
+	authURL := s.Provider.GetAuthURL(state, codeVerifier, nonce, requestedScopes)
 	c.Redirect(http.StatusTemporaryRedirect, authURL)
 }
 
@@ -375,7 +402,7 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	}
 
 	// Exchange the authorization code for tokens
-	accessToken, idToken, err := s.Provider.ExchangeToken(code, sessionData.CodeVerifier)
+	accessToken, idToken, scopes, err := s.Provider.ExchangeToken(code, sessionData.CodeVerifier)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to exchange token")
 		c.JSON(500, gin.H{"error": "server_error"})
@@ -404,6 +431,7 @@ func (s *Server) callbackHandler(c *gin.Context) {
 	sessionData.AccessToken = accessToken
 	sessionData.IDToken = idToken
 	sessionData.Email = email
+	sessionData.Scopes = scopes
 	sessionData.ExpiresAt = time.Now().Add(time.Hour) // Approximate expiry
 
 	// The code from the provider is passed to our client, which will exchange it for a token.
@@ -563,6 +591,23 @@ func (s *Server) buildWWWAuthenticateHeader() string {
 	return fmt.Sprintf("Bearer resource_metadata=\"%%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
 }
 
+// hasRequiredScopes checks if the session has all the required scopes
+func (s *Server) hasRequiredScopes(session SessionData) bool {
+	if len(s.RequiredScopes) == 0 {
+		return true
+	}
+	granted := make(map[string]struct{})
+	for _, sc := range session.Scopes {
+		granted[sc] = struct{}{}
+	}
+	for _, req := range s.RequiredScopes {
+		if _, ok := granted[req]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // authHandler handles Server-Sent Events connections authentication
 func (s *Server) authHandler(c *gin.Context) {
 	log.Info().
@@ -570,9 +615,9 @@ func (s *Server) authHandler(c *gin.Context) {
 		Str("query", c.Request.URL.RawQuery).
 		Str("user_agent", c.Request.UserAgent()).
 		Str("referer", c.Request.Referer()).
-		Msg("Received SSE auth request")
+		Msg("Received MCP auth request")
 
-	// Set CORS headers for the SSE endpoint
+	// Set CORS headers for the MCP endpoint
 	origin := c.Request.Header.Get("Origin")
 	if origin == "" {
 		origin = "*"
@@ -615,6 +660,14 @@ func (s *Server) authHandler(c *gin.Context) {
 			"status":  401,
 			"message": "Invalid or expired token",
 		})
+		return
+	}
+
+	// Check if the session has the required scopes
+	if !s.hasRequiredScopes(sessionData) {
+		log.Warn().Strs("granted_scopes", sessionData.Scopes).Strs("required_scopes", s.RequiredScopes).Msg("Missing required scopes")
+		c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"insufficient_scope\"")
+		c.JSON(403, gin.H{"status": 403, "message": "Insufficient scope"})
 		return
 	}
 

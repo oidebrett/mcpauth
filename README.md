@@ -93,6 +93,30 @@ Use flags or environment variables:
 | `LOG_LEVEL`      | `1`       | 0=debug, 1=info, 2=minimal               |
 
 
+### 🛡️ Scope Configuration
+
+MCPAuth supports fine-grained scope control to enhance security by limiting token privileges. You can define which scopes are allowed in an OAuth request and which are required for a token to be considered valid.
+
+- **Allowed Scopes**: A whitelist of scopes that the middleware is permitted to request from the OAuth provider. If a client requests scopes not in this list, they will be ignored.
+- **Required Scopes**: A list of scopes that *must* be present in the granted token after the user authenticates. If the token does not contain all of these scopes, access will be denied with a `403 Forbidden (Insufficient Scope)` error.
+
+This allows you to enforce policies like requiring an `email` scope for all users while allowing clients to optionally request additional permissions like `profile` or custom API scopes.
+
+#### Configuration
+
+You can configure scopes using command-line flags or environment variables:
+
+| Variable           | Flag                | Description                                  |
+|--------------------|---------------------|----------------------------------------------|
+| `ALLOWED_SCOPES`   | `-allowedScopes`    | Comma-separated list of allowed OAuth scopes.  |
+| `REQUIRED_SCOPES`  | `-requiredScopes`   | Comma-separated list of required OAuth scopes. |
+
+**Example:**
+To allow clients to request `openid`, `email`, and `profile` scopes, but require that all valid tokens include at least `openid` and `email`, you would set:
+- `ALLOWED_SCOPES=openid,email,profile`
+- `REQUIRED_SCOPES=openid,email`
+
+
 ### Docker Compose
 
 ```yaml
@@ -176,7 +200,7 @@ http:
   middlewares:
     mcp-auth:
       forwardAuth:
-        address: "http://mcpauth:11000/sse"
+        address: "http://mcpauth:11000/auth"
         authResponseHeaders:
           - "X-Forwarded-User"
 ```

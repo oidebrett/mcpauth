@@ -8,7 +8,7 @@ services:
       dockerfile: Dockerfile
     command: [
       "-port=11000", 
-      "-path=/sse", 
+      "-path=/auth", 
       "-baseDomain=oauth.yourdomain.com", 
       "-devMode=true",
       "-googleClientID=YOUR_GOOGLE_CLIENT_ID",
@@ -18,4 +18,6 @@ services:
     environment:
       - GOOGLE_CLIENT_ID=YOUR_GOOGLE_CLIENT_ID
       - GOOGLE_CLIENT_SECRET=YOUR_GOOGLE_CLIENT_SECRET
+      # - ALLOWED_SCOPES=openid,email,profile
+      # - REQUIRED_SCOPES=openid,email
     restart: unless-stopped

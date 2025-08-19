@@ -3,6 +3,8 @@ package server
 import (
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // SessionStore provides a concurrency-safe store for session data.
@@ -91,4 +93,22 @@ func (s *SessionStore) GetByToken(token string) (SessionData, bool) {
 		return SessionData{}, false
 	}
 	return data, true
+}
+
+// CleanupExpired removes expired sessions from the store.
+func (s *SessionStore) CleanupExpired() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	cleaned := 0
+	for token, data := range s.byToken {
+		if now.After(data.ExpiresAt) {
+			delete(s.byToken, token)
+			cleaned++
+		}
+	}
+	if cleaned > 0 {
+		log.Info().Int("count", cleaned).Msg("Cleaned up expired sessions")
+	}
 }
