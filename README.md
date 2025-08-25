@@ -317,7 +317,7 @@ http:
 
     mcp-auth:
       forwardAuth:
-        address: "http://mcpauth:11000/sse"
+        address: "http://mcpauth:11000/auth"
         authResponseHeaders:
           - X-Forwarded-User
 ```
