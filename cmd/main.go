@@ -136,12 +136,22 @@ func main() {
 
 	// Configure the OAuth provider
 	if actualClientID != "" && actualClientSecret != "" {
-		if err := s.ConfigureProvider(actualProvider, actualClientID, actualClientSecret, redirectURI, nil); err != nil {
+		// Use allowed scopes as default provider scopes, or fallback to basic Google scopes
+		var providerScopes []string
+		if len(s.AllowedScopes) > 0 {
+			providerScopes = s.AllowedScopes
+		} else {
+			// Default Google scopes if none configured
+			providerScopes = []string{"openid", "email", "profile"}
+		}
+
+		if err := s.ConfigureProvider(actualProvider, actualClientID, actualClientSecret, redirectURI, providerScopes); err != nil {
 			log.Warn().Err(err).Msg("Failed to configure OAuth provider")
 		} else {
 			log.Info().
 				Str("provider", actualProvider).
 				Str("redirectURI", redirectURI).
+				Strs("default_scopes", providerScopes).
 				Msg("Configured OAuth provider")
 		}
 	} else {

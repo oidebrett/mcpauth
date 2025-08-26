@@ -1,0 +1,120 @@
+# Example Traefik dynamic configuration for MCPAuth with OAuth 2.0 Protected Resource Metadata support
+# Save this as a .yml file in your Traefik dynamic configuration directory
+
+http:
+  routers:
+    # MCPAuth OAuth server (oauth.mcpgateway.online)
+    mcpauth-oauth-redirect:
+      rule: "Host(`oauth.mcpgateway.online`)"
+      service: mcpauth-service
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-to-https
+
+    mcpauth-oauth:
+      rule: "Host(`oauth.mcpgateway.online`)"
+      service: mcpauth-service
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+    # Protected Resource Metadata Discovery (HIGHEST PRIORITY)
+    # This handles .well-known/oauth-protected-resource requests for ALL domains
+    global-wellknown:
+      rule: "PathPrefix(`/.well-known/oauth-protected-resource`)"
+      service: mcpauth-service
+      priority: 100  # Highest priority to catch these requests first
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+    # Your protected API/resource (internal.mcpgateway.online)
+    # Note: Exclude .well-known paths since they're handled above
+    internal-api:
+      rule: "Host(`internal.mcpgateway.online`) && !PathPrefix(`/.well-known/oauth-protected-resource`)"
+      service: your-internal-api-service
+      middlewares:
+        - mcp-cors-headers
+        - mcp-auth  # This will handle authentication for API requests
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+    # Example: Another protected resource
+    api-example:
+      rule: "Host(`api.example.com`) && !PathPrefix(`/.well-known/oauth-protected-resource`)"
+      service: your-api-example-service
+      middlewares:
+        - mcp-cors-headers
+        - mcp-auth
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+  middlewares:
+    # CORS headers for MCP endpoints
+    mcp-cors-headers:
+      headers:
+        accessControlAllowCredentials: true
+        accessControlAllowHeaders:
+          - Authorization
+          - Content-Type
+          - mcp-protocol-version
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        accessControlAllowOriginList:
+          - "*"
+        accessControlMaxAge: 86400
+        addVaryHeader: true
+
+    # MCPAuth forwardAuth middleware
+    mcp-auth:
+      forwardAuth:
+        address: "http://mcpauth:11000/auth"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - "X-Forwarded-User"
+
+    # HTTPS redirect
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+  services:
+    # MCPAuth service
+    mcpauth-service:
+      loadBalancer:
+        servers:
+          - url: "http://mcpauth:11000"
+
+    # Your internal API service
+    your-internal-api-service:
+      loadBalancer:
+        servers:
+          - url: "http://your-internal-api:8080"
+
+    # Your example API service  
+    your-api-example-service:
+      loadBalancer:
+        servers:
+          - url: "http://your-api-example:3000"
+
+# TLS configuration
+tls:
+  options:
+    default:
+      sslProtocols:
+        - "TLSv1.2"
+        - "TLSv1.3"
+      cipherSuites:
+        - "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+        - "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"
+        - "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"

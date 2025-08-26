@@ -206,44 +206,33 @@ http:
           - "X-Forwarded-User"
 ```
 
-### 🎯 **Drop-in OAuth 2.0 Protected Resource Metadata Support**
+### 🎯 **OAuth 2.0 Protected Resource Metadata Support**
 
-MCPAuth now provides **automatic OAuth 2.0 Protected Resource Metadata discovery** without requiring separate router configuration!
+MCPAuth provides **automatic OAuth 2.0 Protected Resource Metadata discovery** that works seamlessly with your existing Traefik setup.
 
-**How it works:**
-- When Traefik's `forwardAuth` middleware forwards a `.well-known/oauth-protected-resource` request to `/auth`
-- MCPAuth detects it's a discovery request (via `X-Forwarded-Uri` header)
-- Returns the metadata **publicly without authentication**
-- Uses `X-Forwarded-Host` to construct the correct resource identifier
+### Required: Protected Resource Metadata Router
 
-**Example requests that work automatically:**
-```bash
-# These requests to your protected resources:
-curl https://internal.mcpgateway.online/.well-known/oauth-protected-resource/mcp
-curl https://api.example.com/.well-known/oauth-protected-resource/v1/users
-
-# Get forwarded by Traefik to mcpauth and return:
-{
-  "resource": "https://internal.mcpgateway.online/mcp",
-  "authorization_servers": ["https://oauth.mcpgateway.online/"],
-  "scopes_supported": ["read", "write"]
-}
-```
-
-**✅ No additional Traefik configuration needed!** Your existing `forwardAuth` middleware handles both:
-1. **Authentication** for API requests
-2. **Public metadata discovery** for `.well-known` requests
-
-### Optional: Dedicated Protected Resource Metadata Router
-
-If you prefer explicit routing (not recommended for most use cases), you can still configure a dedicated router:
+You need to add a dedicated router to handle `.well-known/oauth-protected-resource` requests:
 
 ```yaml
 http:
   routers:
+    # Your existing protected resource router with forwardAuth
+    your-api:
+      rule: "Host(`internal.mcpgateway.online`) && !PathPrefix(`/.well-known/oauth-protected-resource`)"
+      service: your-api-service
+      middlewares:
+        - mcp-auth  # Your forwardAuth middleware
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+    # New router for .well-known discovery (higher priority)
     mcpauth-wellknown:
       rule: "PathPrefix(`/.well-known/oauth-protected-resource`)"
       service: mcpauth-service
+      priority: 100  # Higher priority than your API routes
       entryPoints:
         - websecure
       tls:
@@ -254,6 +243,40 @@ http:
       loadBalancer:
         servers:
           - url: "http://mcpauth:11000"
+```
+
+### How It Works
+
+1. **Discovery requests** (`/.well-known/oauth-protected-resource/*`) → routed directly to mcpauth
+2. **API requests** (everything else) → go through your forwardAuth middleware
+3. **MCPAuth automatically detects** the original host and path to return correct metadata
+
+**Example requests:**
+```bash
+# Discovery request - goes directly to mcpauth (no auth required)
+curl https://internal.mcpgateway.online/.well-known/oauth-protected-resource/mcp
+# Returns: {"resource": "https://internal.mcpgateway.online/mcp", ...}
+
+# API request - goes through forwardAuth middleware
+curl https://internal.mcpgateway.online/api/data
+# Requires authentication
+```
+
+### Alternative: Global .well-known Router
+
+If you have multiple domains, you can use a global router:
+
+```yaml
+http:
+  routers:
+    global-wellknown:
+      rule: "PathPrefix(`/.well-known/oauth-protected-resource`)"
+      service: mcpauth-service
+      priority: 100
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
 ```
 
 ### Attach to a Router

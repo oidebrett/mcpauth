@@ -292,3 +292,114 @@ func TestAuthHandlerProtectedResourceDiscovery(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthorizeHandlerScopeFiltering(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name            string
+		allowedScopes   []string
+		requestedScopes string
+		expectedScopes  []string
+	}{
+		{
+			name:            "Filter invalid scopes",
+			allowedScopes:   []string{"openid", "email", "profile"},
+			requestedScopes: "read write openid email",
+			expectedScopes:  []string{"openid", "email"},
+		},
+		{
+			name:            "All scopes allowed",
+			allowedScopes:   []string{"openid", "email", "profile", "read", "write"},
+			requestedScopes: "read write openid",
+			expectedScopes:  []string{"read", "write", "openid"},
+		},
+		{
+			name:            "No allowed scopes configured",
+			allowedScopes:   []string{},
+			requestedScopes: "read write openid",
+			expectedScopes:  []string{"read", "write", "openid"},
+		},
+		{
+			name:            "Empty requested scopes",
+			allowedScopes:   []string{"openid", "email"},
+			requestedScopes: "",
+			expectedScopes:  []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create server instance
+			server := NewServer("oauth.example.com", true)
+			server.SetScopes(tt.allowedScopes, []string{})
+
+			// Mock provider to capture the scopes passed to GetAuthURL
+			mockProvider := &MockProvider{}
+			server.Provider = mockProvider
+
+			// Register a test client
+			server.Clients["test-client"] = Client{
+				ClientID:     "test-client",
+				RedirectURIs: []string{"http://localhost:8080/callback"},
+			}
+
+			// Create request
+			req, err := http.NewRequest("GET", "/authorize", nil)
+			assert.NoError(t, err)
+
+			// Set query parameters
+			q := req.URL.Query()
+			q.Set("client_id", "test-client")
+			q.Set("redirect_uri", "http://localhost:8080/callback")
+			q.Set("response_type", "code")
+			q.Set("state", "test-state")
+			if tt.requestedScopes != "" {
+				q.Set("scope", tt.requestedScopes)
+			}
+			req.URL.RawQuery = q.Encode()
+
+			// Create response recorder
+			w := httptest.NewRecorder()
+
+			// Create Gin context
+			c, _ := gin.CreateTestContext(w)
+			c.Request = req
+
+			// Call the authorize handler
+			server.authorizeHandler(c)
+
+			// Check that it redirected (307)
+			assert.Equal(t, http.StatusTemporaryRedirect, w.Code)
+
+			// Verify the scopes passed to the provider
+			if len(tt.expectedScopes) == 0 && len(mockProvider.CapturedScopes) == 0 {
+				// Both are empty, test passes
+				assert.True(t, true)
+			} else {
+				assert.Equal(t, tt.expectedScopes, mockProvider.CapturedScopes)
+			}
+		})
+	}
+}
+
+// MockProvider for testing
+type MockProvider struct {
+	CapturedScopes []string
+}
+
+func (m *MockProvider) GetAuthURL(state string, codeVerifier string, nonce string, scopes []string) string {
+	m.CapturedScopes = scopes
+	return "https://example.com/auth?state=" + state
+}
+
+func (m *MockProvider) ExchangeToken(code string, codeVerifier string) (string, string, []string, error) {
+	return "access_token", "id_token", []string{"openid", "email"}, nil
+}
+
+func (m *MockProvider) GetUserInfo(accessToken string) (map[string]interface{}, error) {
+	return map[string]interface{}{
+		"email": "test@example.com",
+		"name":  "Test User",
+	}, nil
+}

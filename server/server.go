@@ -384,12 +384,40 @@ func (s *Server) authorizeHandler(c *gin.Context) {
 
 	log.Debug().Str("state", state).Msg("Stored session data")
 
-	// Redirect to OAuth provider
+	// Process and filter requested scopes
 	var requestedScopes []string
 	if scope != "" {
 		requestedScopes = strings.Split(scope, " ")
 	}
-	authURL := s.Provider.GetAuthURL(state, codeVerifier, nonce, requestedScopes)
+
+	// Filter requested scopes against allowed scopes
+	var validScopes []string
+	if len(s.AllowedScopes) > 0 {
+		// Create a map of allowed scopes for efficient lookup
+		allowedMap := make(map[string]struct{})
+		for _, allowedScope := range s.AllowedScopes {
+			allowedMap[allowedScope] = struct{}{}
+		}
+
+		// Only include scopes that are in the allowed list
+		for _, requestedScope := range requestedScopes {
+			if _, isAllowed := allowedMap[requestedScope]; isAllowed {
+				validScopes = append(validScopes, requestedScope)
+			}
+		}
+
+		log.Debug().
+			Strs("requested_scopes", requestedScopes).
+			Strs("allowed_scopes", s.AllowedScopes).
+			Strs("valid_scopes", validScopes).
+			Msg("Filtered scopes for OAuth provider")
+	} else {
+		// If no allowed scopes configured, use all requested scopes
+		validScopes = requestedScopes
+	}
+
+	// Redirect to OAuth provider with filtered scopes
+	authURL := s.Provider.GetAuthURL(state, codeVerifier, nonce, validScopes)
 	c.Redirect(http.StatusTemporaryRedirect, authURL)
 }
 
