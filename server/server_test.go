@@ -403,3 +403,65 @@ func (m *MockProvider) GetUserInfo(accessToken string) (map[string]interface{}, 
 		"name":  "Test User",
 	}, nil
 }
+
+func TestHasRequiredScopes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name           string
+		requiredScopes []string
+		grantedScopes  []string
+		expected       bool
+	}{
+		{
+			name:           "Google full URL scopes match short form requirements",
+			requiredScopes: []string{"openid", "email"},
+			grantedScopes:  []string{"openid", "https://www.googleapis.com/auth/userinfo.email"},
+			expected:       true,
+		},
+		{
+			name:           "Short form scopes match full URL requirements",
+			requiredScopes: []string{"openid", "https://www.googleapis.com/auth/userinfo.email"},
+			grantedScopes:  []string{"openid", "email"},
+			expected:       true,
+		},
+		{
+			name:           "Mixed format scopes",
+			requiredScopes: []string{"openid", "email", "profile"},
+			grantedScopes:  []string{"openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"},
+			expected:       true,
+		},
+		{
+			name:           "Missing required scope",
+			requiredScopes: []string{"openid", "email", "profile"},
+			grantedScopes:  []string{"openid", "https://www.googleapis.com/auth/userinfo.email"},
+			expected:       false,
+		},
+		{
+			name:           "No required scopes",
+			requiredScopes: []string{},
+			grantedScopes:  []string{"openid", "email"},
+			expected:       true,
+		},
+		{
+			name:           "Exact match",
+			requiredScopes: []string{"openid", "email"},
+			grantedScopes:  []string{"openid", "email"},
+			expected:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := NewServer("oauth.example.com", true)
+			server.SetScopes([]string{}, tt.requiredScopes)
+
+			session := SessionData{
+				Scopes: tt.grantedScopes,
+			}
+
+			result := server.hasRequiredScopes(session)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

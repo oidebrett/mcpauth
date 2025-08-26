@@ -242,9 +242,8 @@ func (s *Server) oauthProtectedResourceHandler(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"resource":              resourceURL,
 		"authorization_servers": []string{fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)},
-		"scopes_supported":      []string{"openid", "email"},
+		"scopes_supported":      []string{"read", "write"},
 		"resource_name":         resourceURL,
-		"bearer_methods_supported": []string{"header"},
 	})
 }
 
@@ -635,18 +634,39 @@ func (s *Server) buildWWWAuthenticateHeader() string {
 	return fmt.Sprintf("Bearer resource_metadata=\"%s\", scope=\"openid,email\"", resourceMetadataURL)
 }
 
+// normalizeScope converts Google's full scope URLs to short forms for comparison
+func normalizeScope(scope string) string {
+	switch scope {
+	case "https://www.googleapis.com/auth/userinfo.email":
+		return "email"
+	case "https://www.googleapis.com/auth/userinfo.profile":
+		return "profile"
+	default:
+		return scope
+	}
+}
+
 // hasRequiredScopes checks if the session has all the required scopes
 func (s *Server) hasRequiredScopes(session SessionData) bool {
 	if len(s.RequiredScopes) == 0 {
 		return true
 	}
+
+	// Create a map of granted scopes (normalized)
 	granted := make(map[string]struct{})
 	for _, sc := range session.Scopes {
+		// Add both the original scope and normalized version
 		granted[sc] = struct{}{}
+		granted[normalizeScope(sc)] = struct{}{}
 	}
+
+	// Check if all required scopes are present
 	for _, req := range s.RequiredScopes {
+		// Check both the original required scope and normalized version
 		if _, ok := granted[req]; !ok {
-			return false
+			if _, ok := granted[normalizeScope(req)]; !ok {
+				return false
+			}
 		}
 	}
 	return true
@@ -827,8 +847,7 @@ func (s *Server) handleProtectedResourceDiscovery(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"resource":              resourceURL,
 		"authorization_servers": []string{fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)},
-		"scopes_supported":      []string{"openid", "email"},
+		"scopes_supported":      []string{"read", "write"},
 		"resource_name":         resourceURL,
-		"bearer_methods_supported": []string{"header"},
 	})
 }
