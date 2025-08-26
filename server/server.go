@@ -242,8 +242,9 @@ func (s *Server) oauthProtectedResourceHandler(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"resource":              resourceURL,
 		"authorization_servers": []string{fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)},
-		"scopes_supported":      []string{"read", "write"},
+		"scopes_supported":      []string{"openid", "email"},
 		"resource_name":         resourceURL,
+		"bearer_methods_supported": ["header"]
 	})
 }
 
@@ -631,7 +632,7 @@ func (s *Server) buildWWWAuthenticateHeader() string {
 	}
 
 	resourceMetadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", protocol, s.OAuthDomain)
-	return fmt.Sprintf("Bearer resource_metadata=\"%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
+	return fmt.Sprintf("Bearer resource_metadata=\"%s\", scope=\"openid,email\"", resourceMetadataURL)
 }
 
 // hasRequiredScopes checks if the session has all the required scopes
@@ -826,7 +827,8 @@ func (s *Server) handleProtectedResourceDiscovery(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"resource":              resourceURL,
 		"authorization_servers": []string{fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)},
-		"scopes_supported":      []string{"read", "write"},
+		"scopes_supported":      []string{"openid", "email"},
 		"resource_name":         resourceURL,
+		"bearer_methods_supported": ["header"]
 	})
 }
