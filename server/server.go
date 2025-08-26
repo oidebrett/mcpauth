@@ -632,6 +632,13 @@ func (s *Server) authHandler(c *gin.Context) {
 		Str("referer", c.Request.Referer()).
 		Msg("Received MCP auth request")
 
+	// Check if this is a protected resource discovery request
+	// These should be publicly accessible without authentication
+	if s.isProtectedResourceDiscoveryRequest(c) {
+		s.handleProtectedResourceDiscovery(c)
+		return
+	}
+
 	// Set CORS headers for the MCP endpoint
 	origin := c.Request.Header.Get("Origin")
 	if origin == "" {
@@ -720,4 +727,78 @@ func (s *Server) authHandler(c *gin.Context) {
 	//c.Header("X-Forwarded-User", userEmail)
 	//c.Status(http.StatusOK)
 
+}
+
+// isProtectedResourceDiscoveryRequest checks if the request is for OAuth protected resource metadata
+func (s *Server) isProtectedResourceDiscoveryRequest(c *gin.Context) bool {
+	// Check if the request path starts with the well-known prefix
+	// This handles both root and path-based discovery requests
+	if strings.HasPrefix(c.Request.URL.Path, "/.well-known/oauth-protected-resource") {
+		return true
+	}
+
+	// When coming through Traefik forwardAuth, check the X-Forwarded-Uri header
+	forwardedUri := c.Request.Header.Get("X-Forwarded-Uri")
+	if forwardedUri != "" && strings.HasPrefix(forwardedUri, "/.well-known/oauth-protected-resource") {
+		return true
+	}
+
+	return false
+}
+
+// handleProtectedResourceDiscovery handles OAuth protected resource metadata requests
+// This is the same logic as oauthProtectedResourceHandler but called from authHandler
+func (s *Server) handleProtectedResourceDiscovery(c *gin.Context) {
+	// Get the original path - either from the request URL or from X-Forwarded-Uri header
+	originalPath := c.Request.URL.Path
+	forwardedUri := c.Request.Header.Get("X-Forwarded-Uri")
+	if forwardedUri != "" {
+		originalPath = forwardedUri
+	}
+
+	log.Info().
+		Str("path", c.Request.URL.Path).
+		Str("original_path", originalPath).
+		Str("domain", s.OAuthDomain).
+		Str("host", c.Request.Host).
+		Str("x-forwarded-host", c.Request.Header.Get("X-Forwarded-Host")).
+		Str("x-forwarded-uri", forwardedUri).
+		Msg("Handling OAuth protected resource metadata request via authHandler")
+
+	// Set CORS headers
+	origin := c.Request.Header.Get("Origin")
+	if origin == "" {
+		origin = "*"
+	}
+	c.Header("Access-Control-Allow-Origin", origin)
+	c.Header("Access-Control-Allow-Methods", "GET, OPTIONS")
+	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, mcp-protocol-version")
+	c.Header("Access-Control-Allow-Credentials", "true")
+
+	protocol := "https"
+	if s.DevMode {
+		protocol = "http"
+	}
+
+	// Respect Forwarded/X-Forwarded-Host headers to get the original host
+	originalHost := c.Request.Header.Get("X-Forwarded-Host")
+	if originalHost == "" {
+		originalHost = c.Request.Host
+	}
+
+	// Compute resource identifier from the original path
+	// Strip "/.well-known/oauth-protected-resource" prefix to get the resource path
+	const wellKnownPrefix = "/.well-known/oauth-protected-resource"
+	resourcePath := strings.TrimPrefix(originalPath, wellKnownPrefix)
+
+	// Construct the resource URL based on the original host and extracted path
+	resourceURL := fmt.Sprintf("%s://%s%s", protocol, originalHost, resourcePath)
+
+	// Return the protected resource metadata
+	c.JSON(200, gin.H{
+		"resource":              resourceURL,
+		"authorization_servers": []string{fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)},
+		"scopes_supported":      []string{"read", "write"},
+		"resource_name":         resourceURL,
+	})
 }

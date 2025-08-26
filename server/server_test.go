@@ -173,3 +173,122 @@ func TestOAuthProtectedResourceHandlerCORS(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "https://client.example.com", w.Header().Get("Access-Control-Allow-Origin"))
 }
+
+func TestAuthHandlerProtectedResourceDiscovery(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name               string
+		xForwardedHost     string
+		xForwardedUri      string
+		devMode            bool
+		oauthDomain        string
+		expectedResource   string
+		expectedAuthServer string
+		expectedStatus     int
+	}{
+		{
+			name:               "Discovery via forwardAuth with path",
+			xForwardedHost:     "internal.mcpgateway.online",
+			xForwardedUri:      "/.well-known/oauth-protected-resource/mcp",
+			devMode:            true,
+			oauthDomain:        "oauth.mcpgateway.online",
+			expectedResource:   "http://internal.mcpgateway.online/mcp",
+			expectedAuthServer: "http://oauth.mcpgateway.online/",
+			expectedStatus:     200,
+		},
+		{
+			name:               "Discovery via forwardAuth root path",
+			xForwardedHost:     "internal.mcpgateway.online",
+			xForwardedUri:      "/.well-known/oauth-protected-resource",
+			devMode:            true,
+			oauthDomain:        "oauth.mcpgateway.online",
+			expectedResource:   "http://internal.mcpgateway.online",
+			expectedAuthServer: "http://oauth.mcpgateway.online/",
+			expectedStatus:     200,
+		},
+		{
+			name:               "Discovery via forwardAuth complex path",
+			xForwardedHost:     "api.example.com",
+			xForwardedUri:      "/.well-known/oauth-protected-resource/v1/users",
+			devMode:            true,
+			oauthDomain:        "oauth.example.com",
+			expectedResource:   "http://api.example.com/v1/users",
+			expectedAuthServer: "http://oauth.example.com/",
+			expectedStatus:     200,
+		},
+		{
+			name:               "Normal auth request should fail without token",
+			xForwardedHost:     "internal.mcpgateway.online",
+			xForwardedUri:      "/some-api-endpoint",
+			devMode:            true,
+			oauthDomain:        "oauth.mcpgateway.online",
+			expectedResource:   "",
+			expectedAuthServer: "",
+			expectedStatus:     401,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create server instance
+			server := NewServer(tt.oauthDomain, tt.devMode)
+
+			// Create request to /auth endpoint (simulating Traefik forwardAuth)
+			req, err := http.NewRequest("GET", "/auth", nil)
+			assert.NoError(t, err)
+
+			if tt.xForwardedHost != "" {
+				req.Header.Set("X-Forwarded-Host", tt.xForwardedHost)
+			}
+			if tt.xForwardedUri != "" {
+				req.Header.Set("X-Forwarded-Uri", tt.xForwardedUri)
+			}
+
+			// Create response recorder
+			w := httptest.NewRecorder()
+
+			// Create Gin context
+			c, _ := gin.CreateTestContext(w)
+			c.Request = req
+
+			// Call the auth handler
+			server.authHandler(c)
+
+			// Check response status
+			assert.Equal(t, tt.expectedStatus, w.Code)
+
+			if tt.expectedStatus == 200 {
+				// Parse response body for successful discovery requests
+				var response map[string]interface{}
+				err = json.Unmarshal(w.Body.Bytes(), &response)
+				assert.NoError(t, err)
+
+				// Verify response structure
+				assert.Contains(t, response, "resource")
+				assert.Contains(t, response, "authorization_servers")
+				assert.Contains(t, response, "scopes_supported")
+				assert.Contains(t, response, "resource_name")
+
+				// Verify resource URL
+				assert.Equal(t, tt.expectedResource, response["resource"])
+				assert.Equal(t, tt.expectedResource, response["resource_name"])
+
+				// Verify authorization servers
+				authServers, ok := response["authorization_servers"].([]interface{})
+				assert.True(t, ok)
+				assert.Len(t, authServers, 1)
+				assert.Equal(t, tt.expectedAuthServer, authServers[0])
+
+				// Verify scopes
+				scopes, ok := response["scopes_supported"].([]interface{})
+				assert.True(t, ok)
+				assert.Contains(t, scopes, "read")
+				assert.Contains(t, scopes, "write")
+			} else if tt.expectedStatus == 401 {
+				// Verify WWW-Authenticate header is present for auth failures
+				assert.Contains(t, w.Header().Get("WWW-Authenticate"), "Bearer")
+			}
+		})
+	}
+}

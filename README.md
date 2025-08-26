@@ -206,9 +206,37 @@ http:
           - "X-Forwarded-User"
 ```
 
-### Protected Resource Metadata Router
+### 🎯 **Drop-in OAuth 2.0 Protected Resource Metadata Support**
 
-For OAuth 2.0 Protected Resource Metadata discovery to work correctly, you need to route `.well-known/oauth-protected-resource` requests to the mcpauth service while preserving the original host information:
+MCPAuth now provides **automatic OAuth 2.0 Protected Resource Metadata discovery** without requiring separate router configuration!
+
+**How it works:**
+- When Traefik's `forwardAuth` middleware forwards a `.well-known/oauth-protected-resource` request to `/auth`
+- MCPAuth detects it's a discovery request (via `X-Forwarded-Uri` header)
+- Returns the metadata **publicly without authentication**
+- Uses `X-Forwarded-Host` to construct the correct resource identifier
+
+**Example requests that work automatically:**
+```bash
+# These requests to your protected resources:
+curl https://internal.mcpgateway.online/.well-known/oauth-protected-resource/mcp
+curl https://api.example.com/.well-known/oauth-protected-resource/v1/users
+
+# Get forwarded by Traefik to mcpauth and return:
+{
+  "resource": "https://internal.mcpgateway.online/mcp",
+  "authorization_servers": ["https://oauth.mcpgateway.online/"],
+  "scopes_supported": ["read", "write"]
+}
+```
+
+**✅ No additional Traefik configuration needed!** Your existing `forwardAuth` middleware handles both:
+1. **Authentication** for API requests
+2. **Public metadata discovery** for `.well-known` requests
+
+### Optional: Dedicated Protected Resource Metadata Router
+
+If you prefer explicit routing (not recommended for most use cases), you can still configure a dedicated router:
 
 ```yaml
 http:
@@ -227,12 +255,6 @@ http:
         servers:
           - url: "http://mcpauth:11000"
 ```
-
-This configuration ensures that requests like:
-- `https://internal.mcpgateway.online/.well-known/oauth-protected-resource/mcp`
-- `https://api.example.com/.well-known/oauth-protected-resource/v1`
-
-Are forwarded to mcpauth with the original host preserved via `X-Forwarded-Host` headers, allowing mcpauth to return the correct resource metadata that matches the client's expectations.
 
 ### Attach to a Router
 
