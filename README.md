@@ -85,7 +85,7 @@ Use flags or environment variables:
 | Variable         | Default   | Description                              |
 |------------------|-----------|------------------------------------------|
 | `PORT`           | `11000`   | Port for the auth server                 |
-| `PROTECTED_PATH` | `/sse`    | Protected endpoint path                  |
+| `PROTECTED_PATH` | `/auth`   | Protected endpoint path                  |
 | `OAUTH_DOMAIN`   | *(none)*  | OAuth issuer domain                      |
 | `CLIENT_ID`      | *(none)*  | OAuth client ID                          |
 | `CLIENT_SECRET`  | *(none)*  | OAuth client secret                      |
@@ -201,9 +201,38 @@ http:
     mcp-auth:
       forwardAuth:
         address: "http://mcpauth:11000/auth"
+        trustForwardHeader: true
         authResponseHeaders:
           - "X-Forwarded-User"
 ```
+
+### Protected Resource Metadata Router
+
+For OAuth 2.0 Protected Resource Metadata discovery to work correctly, you need to route `.well-known/oauth-protected-resource` requests to the mcpauth service while preserving the original host information:
+
+```yaml
+http:
+  routers:
+    mcpauth-wellknown:
+      rule: "PathPrefix(`/.well-known/oauth-protected-resource`)"
+      service: mcpauth-service
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    mcpauth-service:
+      loadBalancer:
+        servers:
+          - url: "http://mcpauth:11000"
+```
+
+This configuration ensures that requests like:
+- `https://internal.mcpgateway.online/.well-known/oauth-protected-resource/mcp`
+- `https://api.example.com/.well-known/oauth-protected-resource/v1`
+
+Are forwarded to mcpauth with the original host preserved via `X-Forwarded-Host` headers, allowing mcpauth to return the correct resource metadata that matches the client's expectations.
 
 ### Attach to a Router
 
@@ -241,10 +270,10 @@ curl -i http://localhost:11000/health
 
 **2. Accessing a Protected Endpoint (No Token)**
 
-When you try to access a protected endpoint like `/sse` without a valid token, `mcpauth` should initiate the OAuth2 authentication flow. For a non-browser client like `curl`, this will result in a `302 Found` redirect to the Google login page.
+When you try to access a protected endpoint like `/auth` without a valid token, `mcpauth` should initiate the OAuth2 authentication flow. For a non-browser client like `curl`, this will result in a `302 Found` redirect to the Google login page.
 
 ```bash
-curl -i http://localhost:11000/sse
+curl -i http://localhost:11000/auth
 ```
 *Expected Output:* An HTTP `302 Found` redirecting to `https://accounts.google.com/...
 
@@ -254,7 +283,7 @@ Once you have a valid bearer token from the OAuth provider, you can use it to ac
 
 ```bash
 # Replace YOUR_VALID_TOKEN with an actual bearer token
-curl -i -H "Authorization: Bearer YOUR_VALID_TOKEN" http://localhost:11000/sse
+curl -i -H "Authorization: Bearer YOUR_VALID_TOKEN" http://localhost:11000/auth
 ```
 *Expected Output:* An HTTP `200 OK` and the response from the test server (e.g., the SSE stream).
 
@@ -263,7 +292,7 @@ curl -i -H "Authorization: Bearer YOUR_VALID_TOKEN" http://localhost:11000/sse
 If you use a token that is invalid, malformed, or expired, `mcpauth` should deny access. This will likely result in a `401 Unauthorized` error, prompting for re-authentication.
 
 ```bash
-curl -i -H "Authorization: Bearer INVALID_TOKEN" http://localhost:11000/sse
+curl -i -H "Authorization: Bearer INVALID_TOKEN" http://localhost:11000/auth
 ```
 *Expected Output:* An HTTP `401 Unauthorized` response.
 
@@ -273,7 +302,7 @@ If the `ALLOWED_EMAILS` list is configured, `mcpauth` will validate the user's e
 
 ```bash
 # Use a valid token from a user whose email is NOT in ALLOWED_EMAILS
-curl -i -H "Authorization: Bearer TOKEN_FROM_UNAUTHORIZED_USER" http://localhost:11000/sse
+curl -i -H "Authorization: Bearer TOKEN_FROM_UNAUTHORIZED_USER" http://localhost:11000/auth
 ```
 *Expected Output:* An HTTP `403 Forbidden` response.
 
@@ -285,8 +314,9 @@ curl -i -H "Authorization: Bearer TOKEN_FROM_UNAUTHORIZED_USER" http://localhost
 Apply middlewares in this order:
 
 1. `mcp-cors-headers`
-2. `redirect-regex`
-3. `mcp-auth`
+2. `mcp-auth`
+
+**Note:** The previous `redirect-regex` middleware that redirected `.well-known` requests to `oauth.${domain}` is no longer needed. Instead, use the dedicated router configuration shown above to handle protected resource metadata requests.
 
 Example dynamic config:
 
@@ -309,15 +339,10 @@ http:
         accessControlMaxAge: 86400
         addVaryHeader: true
 
-    redirect-regex:
-      redirectRegex:
-        regex: "^https://([a-z0-9-]+)\.(.+)/\.well-known/(.+)"
-        replacement: "https://oauth.${2}/.well-known/${3}"
-        permanent: true
-
     mcp-auth:
       forwardAuth:
         address: "http://mcpauth:11000/auth"
+        trustForwardHeader: true
         authResponseHeaders:
           - X-Forwarded-User
 ```
@@ -337,7 +362,7 @@ middlewares:
     name: MCP Authentication
     type: forwardAuth
     config:
-      address: "http://mcpauth:11000/sse"
+      address: "http://mcpauth:11000/auth"
       authResponseHeaders:
         - "X-Forwarded-User"
 

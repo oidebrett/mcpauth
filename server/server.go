@@ -134,9 +134,11 @@ func (s *Server) SetupRoutes() {
 	s.Router.GET("/.well-known/oauth-authorization-server", s.oauthAuthorizationServerHandler)
 	s.Router.OPTIONS("/.well-known/oauth-authorization-server", s.optionsHandler)
 
-	// Add OAuth protected resource metadata endpoint
+	// Add OAuth protected resource metadata endpoint - support path-based discovery
 	s.Router.GET("/.well-known/oauth-protected-resource", s.oauthProtectedResourceHandler)
+	s.Router.GET("/.well-known/oauth-protected-resource/*path", s.oauthProtectedResourceHandler)
 	s.Router.OPTIONS("/.well-known/oauth-protected-resource", s.optionsHandler)
+	s.Router.OPTIONS("/.well-known/oauth-protected-resource/*path", s.optionsHandler)
 
 	// Add OAuth client registration endpoint
 	s.Router.POST("/register", s.registerHandler)
@@ -203,6 +205,8 @@ func (s *Server) oauthProtectedResourceHandler(c *gin.Context) {
 	log.Info().
 		Str("path", c.Request.URL.Path).
 		Str("domain", s.OAuthDomain).
+		Str("host", c.Request.Host).
+		Str("x-forwarded-host", c.Request.Header.Get("X-Forwarded-Host")).
 		Msg("Received OAuth protected resource metadata request")
 
 	// Set CORS headers
@@ -220,8 +224,19 @@ func (s *Server) oauthProtectedResourceHandler(c *gin.Context) {
 		protocol = "http"
 	}
 
-	// The resource is the gateway itself, so we point to the root.
-	resourceURL := fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)
+	// Respect Forwarded/X-Forwarded-Host headers to get the original host
+	originalHost := c.Request.Header.Get("X-Forwarded-Host")
+	if originalHost == "" {
+		originalHost = c.Request.Host
+	}
+
+	// Compute resource identifier from request path
+	// Strip "/.well-known/oauth-protected-resource" prefix to get the resource path
+	const wellKnownPrefix = "/.well-known/oauth-protected-resource"
+	resourcePath := strings.TrimPrefix(c.Request.URL.Path, wellKnownPrefix)
+
+	// Construct the resource URL based on the original host and extracted path
+	resourceURL := fmt.Sprintf("%s://%s%s", protocol, originalHost, resourcePath)
 
 	// Return the protected resource metadata
 	c.JSON(200, gin.H{
@@ -588,7 +603,7 @@ func (s *Server) buildWWWAuthenticateHeader() string {
 	}
 
 	resourceMetadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", protocol, s.OAuthDomain)
-	return fmt.Sprintf("Bearer resource_metadata=\"%%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
+	return fmt.Sprintf("Bearer resource_metadata=\"%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
 }
 
 // hasRequiredScopes checks if the session has all the required scopes
