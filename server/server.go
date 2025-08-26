@@ -244,7 +244,7 @@ func (s *Server) oauthProtectedResourceHandler(c *gin.Context) {
 		"authorization_servers": []string{fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)},
 		"scopes_supported":      []string{"openid", "email"},
 		"resource_name":         resourceURL,
-		"bearer_methods_supported": ["header"]
+		"bearer_methods_supported": []string{"header"},
 	})
 }
 
@@ -829,6 +829,6 @@ func (s *Server) handleProtectedResourceDiscovery(c *gin.Context) {
 		"authorization_servers": []string{fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)},
 		"scopes_supported":      []string{"openid", "email"},
 		"resource_name":         resourceURL,
-		"bearer_methods_supported": ["header"]
+		"bearer_methods_supported": []string{"header"},
 	})
 }
