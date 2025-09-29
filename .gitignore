@@ -2,3 +2,9 @@ ai/
 tinyauth/
 .env
 .venv/
+
+data/
+TBD_*
+
+mcpauth
+main

@@ -25,9 +25,18 @@ func main() {
 	requiredScopes := flag.String("requiredScopes", "", "Comma-separated list of required OAuth scopes")
 
 	// OAuth provider configuration
-	provider := flag.String("provider", "google", "OAuth provider to use (google, auth0, etc)")
+	provider := flag.String("provider", "google", "OAuth provider to use (google, internal, etc)")
 	clientID := flag.String("clientID", "", "OAuth client ID")
 	clientSecret := flag.String("clientSecret", "", "OAuth client secret")
+
+	// Database and internal auth configuration
+	dataDir := flag.String("dataDir", "./data", "Directory for database and other data files")
+	useInternalAuth := flag.Bool("useInternalAuth", false, "Use internal authentication instead of external provider")
+
+	// Default admin user (only used if no users exist and internal auth is enabled)
+	adminUsername := flag.String("adminUsername", "admin", "Default admin username")
+	adminEmail := flag.String("adminEmail", "admin@localhost", "Default admin email")
+	adminPassword := flag.String("adminPassword", "admin123", "Default admin password")
 
 	// Parse flags
 	flag.Parse()
@@ -80,7 +89,10 @@ func main() {
 		Msg("Starting with configuration")
 
 	// Create and configure the server
-	s := server.NewServer(*oauthDomain, *devMode)
+	s, err := server.NewServer(*oauthDomain, *devMode, *dataDir)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to create server")
+	}
 
 	// Configure allowed emails if provided
 	if *allowedEmails != "" {
@@ -135,7 +147,19 @@ func main() {
 	redirectURI := fmt.Sprintf("%s://%s/callback", protocol, *oauthDomain)
 
 	// Configure the OAuth provider
-	if actualClientID != "" && actualClientSecret != "" {
+	if *useInternalAuth || actualProvider == "internal" {
+		// Configure internal authentication
+		if err := s.ConfigureProvider("internal", "", "", "", nil); err != nil {
+			log.Fatal().Err(err).Msg("Failed to configure internal provider")
+		}
+
+		// Create default admin user if needed
+		if err := s.CreateDefaultAdminUser(*adminUsername, *adminEmail, *adminPassword); err != nil {
+			log.Warn().Err(err).Msg("Failed to create default admin user")
+		}
+
+		log.Info().Msg("Configured internal authentication provider")
+	} else if actualClientID != "" && actualClientSecret != "" {
 		if err := s.ConfigureProvider(actualProvider, actualClientID, actualClientSecret, redirectURI, nil); err != nil {
 			log.Warn().Err(err).Msg("Failed to configure OAuth provider")
 		} else {
@@ -152,7 +176,7 @@ func main() {
 	address := fmt.Sprintf(":%d", *port)
 	log.Info().Str("address", address).Msg("Starting server")
 
-	err := http.ListenAndServe(address, s.Router)
+	err = http.ListenAndServe(address, s.Router)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to start server")
 	}
