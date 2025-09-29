@@ -1,23 +1,21 @@
 # ----------------------
 # Dev stage with Air + CGO + glibc
 # ----------------------
-FROM golang:1.25 AS dev
+FROM golang:1.23-bookworm-slim AS dev
 
 # Install build dependencies for CGO and sqlite
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
     gcc \
-    g++ \
     libc6-dev \
-    sqlite3 \
     libsqlite3-dev \
+    sqlite3 \
     git \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 WORKDIR /app
 
 # Install Air (hot reload)
-RUN go install github.com/cosmtrek/air@latest
+RUN go install github.com/cosmtrek/air@v1.43.0
 
 # Copy go.mod first and download deps (cache layer)
 COPY go.mod go.sum ./
