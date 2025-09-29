@@ -41,7 +41,7 @@ func (s *LicenseService) CreateLicense(clientID, resource, licenseXML string, ex
 	}
 
 	// Validate resource URL
-	if !isValidURL(resource) {
+	if !isValidURLString(resource) {
 		return nil, fmt.Errorf("invalid resource URL")
 	}
 
@@ -108,19 +108,20 @@ func (s *LicenseService) GetEncryptionKey(token, resource string) (map[string]in
 		return nil, fmt.Errorf("access denied: %s", reason)
 	}
 
-	if license.EncryptionKey == "" {
+	if license.EncryptionKey == nil || *license.EncryptionKey == "" {
 		// Generate key if it doesn't exist
 		return s.GenerateEncryptionKey(license.LicenseID)
 	}
 
 	// Parse existing key
 	var jwk map[string]interface{}
-	if err := json.Unmarshal([]byte(license.EncryptionKey), &jwk); err != nil {
+	if err := json.Unmarshal([]byte(*license.EncryptionKey), &jwk); err != nil {
 		return nil, fmt.Errorf("failed to parse encryption key: %w", err)
 	}
 
 	return jwk, nil
 }
+
 
 // ListLicensesByClient retrieves all licenses for a client
 func (s *LicenseService) ListLicensesByClient(clientID string) ([]*database.RSLLicense, error) {
@@ -186,8 +187,8 @@ func (s *LicenseService) ParseLicenseXML(licenseXML string) (map[string]interfac
 	return info, nil
 }
 
-// isValidURL validates if a string is a valid URL
-func isValidURL(urlStr string) bool {
+// isValidURLString validates if a string is a valid URL
+func isValidURLString(urlStr string) bool {
 	if urlStr == "" {
 		return false
 	}
