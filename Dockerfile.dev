@@ -4,7 +4,7 @@
 FROM golang:1.25 AS dev
 
 # Install build dependencies for CGO and sqlite
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     g++ \
