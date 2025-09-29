@@ -18,7 +18,7 @@ FROM alpine:3.17
 WORKDIR /app
 
 # Copy the binary from the builder stage
-COPY --from=builder /app/mcpauth .
+COPY --from=builder /app/main .
 
 # Expose the port
 EXPOSE 11000
