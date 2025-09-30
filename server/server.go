@@ -317,19 +317,28 @@ func (s *Server) oauthProtectedResourceHandler(c *gin.Context) {
 	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, mcp-protocol-version")
 	c.Header("Access-Control-Allow-Credentials", "true")
 
+	// Detect protocol (prefer headers when behind proxy/load balancer)
 	protocol := "https"
 	if s.DevMode {
 		protocol = "http"
+	} else if forwardedProto := c.Request.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
+		protocol = forwardedProto
 	}
 
-	// The resource is the gateway itself, so we point to the root.
-	resourceURL := fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)
+	// Determine host (fall back to configured domain if unavailable)
+	host := c.Request.Host
+	if host == "" {
+		host = s.OAuthDomain
+	}
+
+	// ✅ Always point to the canonical resource root (/mcp)
+	resourceURL := fmt.Sprintf("%s://%s", protocol, host)
 
 	// Return the protected resource metadata
 	c.JSON(200, gin.H{
 		"resource":              resourceURL,
 		"authorization_servers": []string{fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)},
-		"scopes_supported":      []string{"read", "write"},
+		"scopes_supported":      s.RequiredScopes,
 		"resource_name":         resourceURL,
 	})
 }
@@ -829,6 +838,9 @@ func (s *Server) processInternalLogin(c *gin.Context) {
 		c.String(400, "Missing client_id or redirect_uri")
 		return
 	}
+
+	log.Info().Str("clientID", clientID).Msg(" - Client ID")
+	log.Info().Str("redirectURI", redirectURI).Msg(" - redirectURI")
 
 	// Validate redirect URI
 	if err := s.InternalProvider.ValidateRedirectURI(clientID, redirectURI); err != nil {
@@ -1818,6 +1830,20 @@ func (s *Server) authHandler(c *gin.Context) {
 		Str("referer", c.Request.Referer()).
 		Msg("Received MCP auth request")
 
+    // --- DEBUGGING LOGS START HERE ---
+
+    // Get the authorization header or query parameter
+    authHeader := c.GetHeader("Authorization")
+    tokenParam := c.Query("access_token")
+
+    // Log the raw incoming values to see what the client is sending
+    log.Info().
+        Str("raw_auth_header", authHeader).
+        Str("raw_access_token_param", tokenParam).
+        Msg("Checking for authorization token")
+
+    // --- DEBUGGING LOGS END HERE --- 
+	
 	// Set CORS headers for the MCP endpoint
 	origin := c.Request.Header.Get("Origin")
 	if origin == "" {
@@ -1827,10 +1853,6 @@ func (s *Server) authHandler(c *gin.Context) {
 	c.Header("Access-Control-Allow-Methods", "GET, OPTIONS")
 	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type")
 	c.Header("Access-Control-Allow-Credentials", "true")
-
-	// Get the authorization header or query parameter
-	authHeader := c.GetHeader("Authorization")
-	tokenParam := c.Query("access_token")
 
 	var token string
 
@@ -1853,6 +1875,11 @@ func (s *Server) authHandler(c *gin.Context) {
 	// Validate the token by checking if it exists in the session store.
 	// This is now an efficient O(1) lookup.
 	sessionData, ok := s.Sessions.GetByToken(token)
+
+	// --- ADD A LOG HERE TO SEE THE EXTRACTED TOKEN (OPTIONAL, but useful) ---
+    // CAUTION: Be careful logging tokens in production. For debugging only.
+    log.Info().Str("extracted_token_prefix", token[:min(len(token), 10)]).Msg("Token extracted successfully")
+
 	if !ok {
 		// Token not found or expired
 		log.Warn().Msg("Invalid or expired token")

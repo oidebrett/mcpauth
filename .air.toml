@@ -1,0 +1,25 @@
+# .air.toml
+
+# Root directory of the project
+root = "."
+tmp_dir = "tmp"
+
+[build]
+# Watch these directories
+include_dir = ["cmd", "server", "data", "assets", "test_mcp_server"]
+# Files/extensions to include
+include_ext = ["go", "tpl", "tmpl", "html"]
+delay = 1000   # wait 1s before restart
+
+# Ignore these
+exclude_dir = ["tmp"]
+
+# The actual build command
+cmd = "go build -o ./tmp/main ./cmd"
+
+# What to run after build
+bin = "./tmp/main"
+
+# Logging
+log_color = "true"
+

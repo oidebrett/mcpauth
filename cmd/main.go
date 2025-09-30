@@ -25,7 +25,8 @@ func main() {
 	requiredScopes := flag.String("requiredScopes", "", "Comma-separated list of required OAuth scopes")
 
 	// OAuth provider configuration
-	provider := flag.String("provider", "google", "OAuth provider to use (google, internal, etc)")
+	provider := flag.String("provider", "internal", "OAuth provider to use (google, internal, etc)")
+	//provider := flag.String("provider", "google", "OAuth provider to use (google, internal, etc)")
 	clientID := flag.String("clientID", "", "OAuth client ID")
 	clientSecret := flag.String("clientSecret", "", "OAuth client secret")
 
@@ -122,6 +123,17 @@ func main() {
 	actualClientSecret := *clientSecret
 	actualProvider := *provider
 
+	log.Info().
+		Str("provider", actualProvider). 
+		Msg("Provider configuration")
+
+    if actualProvider == "" {
+        actualProvider = os.Getenv("PROVIDER")
+        log.Info().
+            Str("provider", actualProvider). 
+            Msg("Provider configuration")
+    }
+
 	// If empty, try environment variables
 	if actualClientID == "" {
 		actualClientID = os.Getenv("CLIENT_ID")
@@ -138,7 +150,6 @@ func main() {
 			actualClientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
 		}
 	}
-
 	// Construct the redirect URI based on the base domain
 	protocol := "https"
 	if *devMode {
@@ -178,7 +189,7 @@ func main() {
 
 	err = http.ListenAndServe(address, s.Router)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to start server")
+		log.Fatal().Err(err).Msg("Failed to start server...")
 	}
 }
 
