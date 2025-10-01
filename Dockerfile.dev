@@ -14,9 +14,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Air (hot reload)
-RUN go install github.com/cosmtrek/air@v1.43.0
-
 # Copy go.mod first and download deps (cache layer)
 COPY go.mod go.sum ./
 RUN go mod download

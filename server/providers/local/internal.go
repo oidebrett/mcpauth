@@ -124,11 +124,61 @@ func (p *Provider) AuthenticateUser(username, password string) (*database.User, 
 	return user, nil
 }
 
+// ValidateClientScopes validates that requested scopes are allowed for the client
+func (p *Provider) ValidateClientScopes(clientID string, requestedScopes []string) error {
+	if len(requestedScopes) == 0 {
+		return nil // No scopes to validate
+	}
+
+	client, err := p.ClientRepo.GetClientByID(clientID)
+	if err != nil {
+		log.Error().Err(err).Str("client_id", clientID).Msg("Client not found during scope validation")
+		return fmt.Errorf("client not found: %w", err)
+	}
+
+	allowedScopes, err := client.GetScopes()
+	if err != nil {
+		log.Error().Err(err).Str("client_id", clientID).Msg("Failed to parse client scopes")
+		return fmt.Errorf("failed to parse client scopes: %w", err)
+	}
+
+	// Create a map of allowed scopes for efficient lookup
+	allowedScopeMap := make(map[string]bool)
+	for _, allowedScope := range allowedScopes {
+		allowedScopeMap[allowedScope] = true
+	}
+
+	// Validate that all requested scopes are allowed for this client
+	for _, requestedScope := range requestedScopes {
+		if !allowedScopeMap[requestedScope] {
+			log.Warn().
+				Str("client_id", clientID).
+				Str("invalid_scope", requestedScope).
+				Strs("allowed_scopes", allowedScopes).
+				Strs("requested_scopes", requestedScopes).
+				Msg("Scope validation failed - requested scope not allowed")
+			return fmt.Errorf("scope '%s' is not allowed for client '%s'", requestedScope, clientID)
+		}
+	}
+
+	log.Info().
+		Str("client_id", clientID).
+		Strs("requested_scopes", requestedScopes).
+		Strs("allowed_scopes", allowedScopes).
+		Msg("Scope validation passed")
+	return nil
+}
+
 // CreateAuthorizationCode creates an authorization code for a user
 func (p *Provider) CreateAuthorizationCode(clientID string, userID int, redirectURI string, scopes []string) (*database.AuthorizationCode, error) {
+	// Validate that requested scopes are allowed for this client
+	if err := p.ValidateClientScopes(clientID, scopes); err != nil {
+		return nil, fmt.Errorf("scope validation failed: %w", err)
+	}
+
 	// Authorization codes expire in 10 minutes
 	expiresAt := time.Now().Add(10 * time.Minute)
-	
+
 	return p.AuthCodeRepo.CreateAuthCode(clientID, userID, redirectURI, scopes, expiresAt)
 }
 

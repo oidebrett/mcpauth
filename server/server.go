@@ -803,9 +803,14 @@ func (s *Server) processInternalLogin(c *gin.Context) {
 	username := c.PostForm("username")
 	password := c.PostForm("password")
 
-	// Get stored parameters from cookies
+	// Get stored parameters from cookies or query parameters
 	state, _ := c.Cookie("auth_state")
 	scope, _ := c.Cookie("auth_scope")
+
+	// If scope is not in cookies, try to get it from query parameters
+	if scope == "" {
+		scope = c.Query("scope")
+	}
 
 	if username == "" || password == "" {
 		c.Redirect(302, "/internal/login?error=Username and password are required")
@@ -849,16 +854,21 @@ func (s *Server) processInternalLogin(c *gin.Context) {
 	}
 
 	// Parse scopes
-	var scopes []string
+	var requestedScopes []string
 	if scope != "" {
-		scopes = strings.Split(scope, " ")
+		requestedScopes = strings.Split(scope, " ")
 	}
 
-	// Create authorization code
-	authCode, err := s.InternalProvider.CreateAuthorizationCode(clientID, user.ID, redirectURI, scopes)
+	// Create authorization code (scope validation is handled inside CreateAuthorizationCode)
+	authCode, err := s.InternalProvider.CreateAuthorizationCode(clientID, user.ID, redirectURI, requestedScopes)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create authorization code")
-		c.String(500, "Internal server error")
+		// Check if it's a scope validation error
+		if strings.Contains(err.Error(), "scope validation failed") || strings.Contains(err.Error(), "not allowed") {
+			c.String(400, err.Error())
+		} else {
+			c.String(500, "Internal server error")
+		}
 		return
 	}
 
@@ -1389,40 +1399,50 @@ func (s *Server) adminDashboardHandler(c *gin.Context) {
                 return;
             }
 
-            const table = ` + "`" + `
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Client ID</th>
-                            <th>Client Secret</th>
-                            <th>Name</th>
-                            <th>Redirect URIs</th>
-                            <th>Scopes</th>
-                            <th>Status</th>
-                            <th>Created</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${data.clients.map(client => ` + "`" + `
-                            <tr>
-                                <td><code style="font-size: 0.8em;">${client.client_id}</code></td>
-                                <td><code style="font-size: 0.8em; word-break: break-all;">${client.client_secret || 'Hidden'}</code></td>
-                                <td>${client.client_name}</td>
-                                <td style="font-size: 0.9em;">${JSON.parse(client.redirect_uris).join(', ')}</td>
-                                <td>${JSON.parse(client.scopes).join(', ')}</td>
-                                <td><span class="status ${client.active ? 'active' : 'inactive'}">${client.active ? 'Active' : 'Inactive'}</span></td>
-                                <td>${new Date(client.created_at).toLocaleDateString()}</td>
-                                <td>
-                                    <button class="btn btn-danger" onclick="deleteClient('${client.client_id}')" style="font-size: 0.8em; padding: 0.25rem 0.5rem;">Delete</button>
-                                </td>
-                            </tr>
-                        ` + "`" + `).join('')}
-                    </tbody>
-                </table>
-            ` + "`" + `;
-            document.getElementById('clients-table').innerHTML = table;
-        }
+			const table = ` + "`" + `
+				<table class="table">
+					<thead>
+						<tr>
+							<th>Client ID</th>
+							<th>Client Secret</th>
+							<th>Name</th>
+							<th>Redirect URIs</th>
+							<th>Scopes</th>
+							<th>Status</th>
+							<th>Created</th>
+							<th>Actions</th>
+						</tr>
+					</thead>
+					<tbody>
+						${
+							// Start of the conditional logic
+							data.clients && data.clients.length > 0
+								? data.clients.map(client => ` + "`" + `
+									<tr>
+										<td><code style="font-size: 0.8em;">${client.client_id}</code></td>
+										<td><code style="font-size: 0.8em; word-break: break-all;">${client.client_secret || 'Hidden'}</code></td>
+										<td>${client.client_name}</td>
+										<td style="font-size: 0.9em;">${JSON.parse(client.redirect_uris).join(', ')}</td>
+										<td>${JSON.parse(client.scopes).join(', ')}</td>
+										<td><span class="status ${client.active ? 'active' : 'inactive'}">${client.active ? 'Active' : 'Inactive'}</span></td>
+										<td>${new Date(client.created_at).toLocaleDateString()}</td>
+										<td>
+											<button class="btn btn-danger" onclick="deleteClient('${client.client_id}')" style="font-size: 0.8em; padding: 0.25rem 0.5rem;">Delete</button>
+										</td>
+									</tr>
+								` + "`" + `).join('')
+								: // Else (No Clients): Insert the empty table row
+								` + "`" + `
+								<tr>
+									<td colspan="8" style="text-align: center; color: #6c757d;">No clients configured.</td>
+								</tr>
+								` + "`" + `
+						}
+					</tbody>
+				</table>
+			` + "`" + `;
+			document.getElementById('clients-table').innerHTML = table;
+		}
 
         async function loadScopes() {
             const data = await apiCall('/scopes');
@@ -1454,19 +1474,22 @@ func (s *Server) adminDashboardHandler(c *gin.Context) {
             document.getElementById('scopes-table').innerHTML = table;
         }
 
-        async function loadScopesForForm() {
-            const data = await apiCall('/scopes');
-            if (!data) return;
+		async function loadScopesForForm() {
+			const data = await apiCall('/scopes');
+			if (!data) return;
 
-            const checkboxes = data.scopes.map(scope => ` + "`" + `
-                <label style="display: block; margin-bottom: 0.5rem;">
-                    <input type="checkbox" name="scopes" value="${scope.name}" style="margin-right: 0.5rem;">
-                    ${scope.name} - ${scope.description}
-                </label>
-            ` + "`" + `).join('');
+			const checkboxes = data.scopes.map(scope => ` + "`" + `
+				<label style="display: inline-flex; align-items: flex-start; margin-bottom: 0.5rem; cursor: pointer;">
+					<span style="display: inline-block; width: 1.5rem; text-align: center;">
+						<input type="checkbox" name="scopes" value="${scope.name}">
+					</span>
+					<span>${scope.name} - ${scope.description}</span>
+				</label>
+			` + "`" + `).join('');
 
-            document.getElementById('scope-checkboxes').innerHTML = checkboxes;
-        }
+			document.getElementById('scope-checkboxes').innerHTML = checkboxes;
+		}
+
 
         // Form submissions
         document.getElementById('createUserForm').addEventListener('submit', async (e) => {
@@ -1830,19 +1853,9 @@ func (s *Server) authHandler(c *gin.Context) {
 		Str("referer", c.Request.Referer()).
 		Msg("Received MCP auth request")
 
-    // --- DEBUGGING LOGS START HERE ---
-
     // Get the authorization header or query parameter
     authHeader := c.GetHeader("Authorization")
     tokenParam := c.Query("access_token")
-
-    // Log the raw incoming values to see what the client is sending
-    log.Info().
-        Str("raw_auth_header", authHeader).
-        Str("raw_access_token_param", tokenParam).
-        Msg("Checking for authorization token")
-
-    // --- DEBUGGING LOGS END HERE --- 
 	
 	// Set CORS headers for the MCP endpoint
 	origin := c.Request.Header.Get("Origin")
@@ -1876,10 +1889,6 @@ func (s *Server) authHandler(c *gin.Context) {
 	// This is now an efficient O(1) lookup.
 	sessionData, ok := s.Sessions.GetByToken(token)
 
-	// --- ADD A LOG HERE TO SEE THE EXTRACTED TOKEN (OPTIONAL, but useful) ---
-    // CAUTION: Be careful logging tokens in production. For debugging only.
-    log.Info().Str("extracted_token_prefix", token[:min(len(token), 10)]).Msg("Token extracted successfully")
-
 	if !ok {
 		// Token not found or expired
 		log.Warn().Msg("Invalid or expired token")
@@ -1892,6 +1901,7 @@ func (s *Server) authHandler(c *gin.Context) {
 	}
 
 	// Check if the session has the required scopes
+	log.Info().Strs("granted_scopes", sessionData.Scopes).Strs("required_scopes", s.RequiredScopes).Msg("Scopes")
 	if !s.hasRequiredScopes(sessionData) {
 		log.Warn().Strs("granted_scopes", sessionData.Scopes).Strs("required_scopes", s.RequiredScopes).Msg("Missing required scopes")
 		c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"insufficient_scope\"")
