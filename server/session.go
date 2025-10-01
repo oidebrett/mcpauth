@@ -3,9 +3,12 @@ package server
 import (
 	"sync"
 	"time"
-
+	"fmt"
 	"github.com/rs/zerolog/log"
+	"github.com/golang-jwt/jwt/v5"
 )
+
+var jwtSecret = []byte("my-secret-key") // ⚠️ move to config/env
 
 // SessionStore provides a concurrency-safe store for session data.
 type SessionStore struct {
@@ -77,22 +80,58 @@ func (s *SessionStore) SaveToken(token string, data SessionData) {
 	}
 }
 
-// GetByToken retrieves session data by the access token and checks for expiry.
-func (s *SessionStore) GetByToken(token string) (SessionData, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	data, ok := s.byToken[token]
-	if !ok {
-		return SessionData{}, false
-	}
+func toStringSlice(val interface{}) []string {
+    if arr, ok := val.([]interface{}); ok {
+        out := make([]string, 0, len(arr))
+        for _, v := range arr {
+            if s, ok := v.(string); ok {
+                out = append(out, s)
+            }
+        }
+        return out
+    }
+    return nil
+}
 
-	// Check for expiry
-	if time.Now().After(data.ExpiresAt) {
-		// Token is expired, don't return it.
-		// A separate cleanup process could remove expired tokens from the store.
-		return SessionData{}, false
-	}
-	return data, true
+// GetByToken retrieves session data by the access token and checks for expiry.
+// Falls back to validating a JWT if not found in the session store.
+func (s *SessionStore) GetByToken(token string) (SessionData, bool) {
+    s.mu.RLock()
+    data, ok := s.byToken[token]
+    s.mu.RUnlock()
+
+    // First check in-memory session
+    if ok {
+        if time.Now().After(data.ExpiresAt) {
+            return SessionData{}, false
+        }
+        return data, true
+    }
+
+    // --- Fallback: validate JWT ---
+    claims, err := validateJWT(token)
+    if err != nil {
+        return SessionData{}, false
+    }
+
+    exp, ok := (*claims)["exp"].(float64)
+    if !ok {
+        return SessionData{}, false
+    }
+
+    // 🔑 Extract scopes (if present in JWT claims)
+    var scopes []string
+    if rawScopes, ok := (*claims)["scopes"]; ok {
+        scopes = toStringSlice(rawScopes) // your helper already converts []interface{} → []string
+    }
+
+    session := SessionData{
+        AccessToken: token,
+        ExpiresAt:   time.Unix(int64(exp), 0),
+        Scopes:      scopes, // ✅ now included
+    }
+
+    return session, true
 }
 
 // CleanupExpired removes expired sessions from the store.
@@ -111,4 +150,23 @@ func (s *SessionStore) CleanupExpired() {
 	if cleaned > 0 {
 		log.Info().Int("count", cleaned).Msg("Cleaned up expired sessions")
 	}
+}
+
+func validateJWT(tokenStr string) (*jwt.MapClaims, error) {
+    parsed, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+        // Ensure HMAC is used
+        if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+            return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+        }
+        return jwtSecret, nil
+    })
+    if err != nil || !parsed.Valid {
+        return nil, fmt.Errorf("invalid token: %w", err)
+    }
+
+    claims, ok := parsed.Claims.(jwt.MapClaims)
+    if !ok {
+        return nil, fmt.Errorf("invalid claims type")
+    }
+    return &claims, nil
 }

@@ -1,3 +1,4 @@
+
 package database
 
 import (
@@ -8,7 +9,10 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"github.com/google/uuid"
+	"github.com/golang-jwt/jwt/v5"
 )
+
+var jwtSecret = []byte("my-secret-key") // ⚠️ move to config/env
 
 // UserRepository handles user database operations
 type UserRepository struct {
@@ -475,23 +479,41 @@ func NewTokenRepository(db *DB) *TokenRepository {
 
 // CreateAccessToken creates a new access token
 func (r *TokenRepository) CreateAccessToken(clientID string, userID int, scopes []string, expiresAt time.Time) (*AccessToken, error) {
-	token := uuid.New().String()
+	claims := jwt.MapClaims{
+		"sub": userID,
+		"aud": clientID,
+		"scopes": scopes,
+		"exp": expiresAt.Unix(),
+		"iat": time.Now().Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signedToken, err := token.SignedString(jwtSecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign JWT: %w", err)
+	}
+
+	// (Optional) still persist to DB for revocation
+	query := `
+		INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at)
+		VALUES (?, ?, ?, ?, ?)
+	`
 
 	scopesJSON, err := json.Marshal(scopes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal scopes: %w", err)
 	}
 
-	query := `
-		INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at)
-		VALUES (?, ?, ?, ?, ?)
-	`
-	_, err = r.db.Exec(query, token, clientID, userID, string(scopesJSON), expiresAt)
+	_, err = r.db.Exec(query, signedToken, clientID, userID, string(scopesJSON), expiresAt)
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to create access token: %w", err)
+		return nil, fmt.Errorf("failed to store access token: %w", err)
 	}
 
-	return r.GetAccessToken(token)
+	// 🔹 Add logging here
+	fmt.Printf("[DEBUG] Generated JWT: %s\n", signedToken)
+
+	return r.GetAccessToken(signedToken)
 }
 
 // GetAccessToken retrieves an access token

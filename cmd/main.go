@@ -25,7 +25,7 @@ func main() {
 	requiredScopes := flag.String("requiredScopes", "", "Comma-separated list of required OAuth scopes")
 
 	// OAuth provider configuration
-	provider := flag.String("provider", "google", "OAuth provider to use (google, internal, etc)")
+	provider := flag.String("provider", "", "OAuth provider to use (google, internal, etc)")
 	clientID := flag.String("clientID", "", "OAuth client ID")
 	clientSecret := flag.String("clientSecret", "", "OAuth client secret")
 
@@ -120,7 +120,18 @@ func main() {
 	// Check environment variables for OAuth credentials if not provided via flags
 	actualClientID := *clientID
 	actualClientSecret := *clientSecret
+
+	// Determine actual provider: priority is CLI flag > ENV > fallback
 	actualProvider := *provider
+	if actualProvider == "" {
+		if envProvider := os.Getenv("PROVIDER"); envProvider != "" {
+			actualProvider = envProvider
+		} else {
+			actualProvider = "internal" // final fallback
+		}
+	}
+
+	log.Info().Str("provider", actualProvider).Msg("Provider configuration")
 
 	// If empty, try environment variables
 	if actualClientID == "" {
@@ -138,7 +149,6 @@ func main() {
 			actualClientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
 		}
 	}
-
 	// Construct the redirect URI based on the base domain
 	protocol := "https"
 	if *devMode {
@@ -148,28 +158,32 @@ func main() {
 
 	// Configure the OAuth provider
 	if *useInternalAuth || actualProvider == "internal" {
-		// Configure internal authentication
+		// Internal auth
 		if err := s.ConfigureProvider("internal", "", "", "", nil); err != nil {
 			log.Fatal().Err(err).Msg("Failed to configure internal provider")
 		}
 
-		// Create default admin user if needed
 		if err := s.CreateDefaultAdminUser(*adminUsername, *adminEmail, *adminPassword); err != nil {
 			log.Warn().Err(err).Msg("Failed to create default admin user")
 		}
 
 		log.Info().Msg("Configured internal authentication provider")
-	} else if actualClientID != "" && actualClientSecret != "" {
-		if err := s.ConfigureProvider(actualProvider, actualClientID, actualClientSecret, redirectURI, nil); err != nil {
-			log.Warn().Err(err).Msg("Failed to configure OAuth provider")
-		} else {
-			log.Info().
-				Str("provider", actualProvider).
-				Str("redirectURI", redirectURI).
-				Msg("Configured OAuth provider")
-		}
 	} else {
-		log.Warn().Msg("OAuth credentials not provided. OAuth flows will not work.")
+		// External provider (default: google)
+		if actualClientID == "" || actualClientSecret == "" {
+			log.Fatal().
+				Str("provider", actualProvider).
+				Msg("ClientID and ClientSecret must be set for external providers")
+		}
+
+		if err := s.ConfigureProvider(actualProvider, actualClientID, actualClientSecret, redirectURI, nil); err != nil {
+			log.Fatal().Err(err).Msg("Failed to configure OAuth provider")
+		}
+
+		log.Info().
+			Str("provider", actualProvider).
+			Str("redirectURI", redirectURI).
+			Msg("Configured OAuth provider")
 	}
 
 	// Start the server
@@ -178,7 +192,7 @@ func main() {
 
 	err = http.ListenAndServe(address, s.Router)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to start server")
+		log.Fatal().Err(err).Msg("Failed to start server...")
 	}
 }
 
