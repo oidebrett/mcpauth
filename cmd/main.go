@@ -126,11 +126,12 @@ func main() {
 	if actualProvider == "" {
 		if envProvider := os.Getenv("PROVIDER"); envProvider != "" {
 			actualProvider = envProvider
+		} else if os.Getenv("CLIENT_ID") != "" || os.Getenv("CLIENT_SECRET") != "" {
+			actualProvider = "google"
 		} else {
 			actualProvider = "internal" // final fallback
 		}
 	}
-
 	log.Info().Str("provider", actualProvider).Msg("Provider configuration")
 
 	// If empty, try environment variables

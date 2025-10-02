@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libc6-dev \
     libsqlite3-dev \
     sqlite3 \
+    ca-certificates \    
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 WORKDIR /app
