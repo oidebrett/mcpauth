@@ -9,7 +9,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libc6-dev \
     libsqlite3-dev \
     sqlite3 \
-    ca-certificates \    
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 WORKDIR /app
@@ -22,7 +21,6 @@ RUN go mod download
 COPY . .
 
 # Build the application binary
-# Output goes to /app/bin/main
 RUN go build -o /app/bin/main ./cmd/main.go
 
 # ----------------------
@@ -30,9 +28,10 @@ RUN go build -o /app/bin/main ./cmd/main.go
 # ----------------------
 FROM debian:bookworm-slim AS production
 
-# Install only sqlite runtime (no dev headers, smaller image)
+# Install only sqlite runtime and ca-certificates (no dev headers, smaller image)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsqlite3-0 \
+    ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

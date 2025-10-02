@@ -1827,6 +1827,17 @@ func (s *Server) buildWWWAuthenticateHeader() string {
 	return fmt.Sprintf("Bearer resource_metadata=\"%%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
 }
 
+func normalizeScope(scope string) string {
+	switch scope {
+	case "https://www.googleapis.com/auth/userinfo.email":
+		return "email"
+	case "https://www.googleapis.com/auth/userinfo.profile":
+		return "profile"
+	default:
+		return scope
+	}
+}
+
 // hasRequiredScopes checks if the session has all the required scopes
 func (s *Server) hasRequiredScopes(session SessionData) bool {
 	if len(s.RequiredScopes) == 0 {
@@ -1834,10 +1845,10 @@ func (s *Server) hasRequiredScopes(session SessionData) bool {
 	}
 	granted := make(map[string]struct{})
 	for _, sc := range session.Scopes {
-		granted[sc] = struct{}{}
+		granted[normalizeScope(sc)] = struct{}{}
 	}
 	for _, req := range s.RequiredScopes {
-		if _, ok := granted[req]; !ok {
+		if _, ok := granted[normalizeScope(req)]; !ok {
 			return false
 		}
 	}
