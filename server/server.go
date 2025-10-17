@@ -1338,18 +1338,22 @@ func (s *Server) adminDashboardHandler(c *gin.Context) {
             }
         }
 
-        async function loadOverview() {
-            const [users, clients, scopes] = await Promise.all([
-                apiCall('/users'),
-                apiCall('/clients'),
-                apiCall('/scopes')
-            ]);
+		async function loadOverview() {
+			const [users, clients, scopes] = await Promise.all([
+				apiCall('/users'),
+				apiCall('/clients'),
+				apiCall('/scopes')
+			]);
 
-            document.getElementById('user-count').textContent = users ? users.users.length : 'Error';
-            document.getElementById('client-count').textContent = clients ? clients.clients.length : 'Error';
-            document.getElementById('scope-count').textContent = scopes ? scopes.scopes.length : 'Error';
-        }
+			const userCount = users?.users?.length ?? 0;
+			const clientCount = clients?.clients?.length ?? 0;
+			const scopeCount = scopes?.scopes?.length ?? 0;
 
+			document.getElementById('user-count').textContent = userCount;
+			document.getElementById('client-count').textContent = clientCount;
+			document.getElementById('scope-count').textContent = scopeCount;
+		}
+			
         async function loadUsers() {
             const data = await apiCall('/users');
             if (!data) {
