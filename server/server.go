@@ -1952,6 +1952,9 @@ func (s *Server) authHandler(c *gin.Context) {
 
 	// Add X-Forwarded-User header with the authenticated user's email
 	c.Header("X-Forwarded-User", userEmail)
+	if len(sessionData.Scopes) > 0 {
+		c.Header("X-Forwarded-Scopes", strings.Join(sessionData.Scopes, " "))
+	}	
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(`You're authenticated as '`+userEmail+`'`))
 
 	//Removed this code
