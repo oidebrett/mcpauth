@@ -17,6 +17,9 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
+# Make sure /app/data always exists (even if it's empty or ignored)
+RUN mkdir -p /app/data
+
 # Copy source
 COPY . .
 
