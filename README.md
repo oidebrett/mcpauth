@@ -9,7 +9,7 @@
   <img src="https://github.com/oidebrett/mcpauth/actions/workflows/ci.yml/badge.svg" alt="CI Status">
 </div>
 
-## 🔐 MCPAuth: Gateway Authentication for Secure Enterprise MCP Integrations
+## MCPAuth: Gateway Authentication for Secure Enterprise MCP Integrations
 
 **McpAuth** is the authentication and authorization component of the **MCP Gateway** Proof of Concept (PoC) described in the paper:
 
@@ -22,7 +22,7 @@ This repository is part of a broader initiative to enable **secure, scalable, an
 <img src="assets/resource_authorization.png" width="80%"/> 
 ---
 
-### 🔍 Purpose
+### Purpose
 
 McpAuth is designed to:
 - **Decouple security logic** from MCP servers
@@ -33,7 +33,7 @@ McpAuth is designed to:
 
 ---
 
-### 📚 Background
+### Background
 
 This implementation is part of a larger PoC that validates:
 - A reference **MCP Gateway architecture** for secure deployments
@@ -47,20 +47,20 @@ The **full proof of concept** includes:
 - Seamless integration with Anthropic's MCP Inspector
 
 
-## ✨ Features
+## Features
 
-- 🔐 OAuth2 authentication with PKCE via Traefik `forwardAuth`
-- ⚡ Seamless integration with MCP Gateway SSE endpoints
-- ✅ Email whitelisting for controlled access
-- 🐳 Docker-ready, easy to deploy
-- 🧪 Includes a Python-based test server
+- OAuth2 authentication with PKCE via Traefik `forwardAuth`
+- Seamless integration with MCP Gateway SSE endpoints
+- Email whitelisting for controlled access
+- Docker-ready, easy to deploy
+- Includes a Python-based test server
 
 
 <img src="assets/MCPAuthFlow.png" width="80%"/> 
 
 ---
 
-## 🚀 Quick Start (assuming a completely standalone working environment)
+## Quick Start (assuming a completely standalone working environment)
 
 ### Set Up Google OAuth
 Go to the Google Cloud Console
@@ -93,7 +93,7 @@ Use flags or environment variables:
 | `LOG_LEVEL`      | `1`       | 0=debug, 1=info, 2=minimal               |
 
 
-### 🛡️ Scope Configuration
+### Scope Configuration
 
 MCPAuth supports fine-grained scope control to enhance security by limiting token privileges. You can define which scopes are allowed in an OAuth request and which are required for a token to be considered valid.
 
@@ -143,15 +143,15 @@ services:
 
 
 
-## 🚀 Developers Installation
+## Developers Installation
 
-### 📦 Prerequisites
+### Prerequisites
 
 - Go 1.21+
 - Traefik v2.x+
 - An OAuth provider (e.g., Google, GitHub)
 
-### 🛠️ Installation
+### Installation
 
 ```bash
 git clone https://github.com/oidebrett/mcpauth
@@ -166,7 +166,7 @@ go run cmd/main.go -port=11000 -oauthDomain=your-domain.com
 ---
 
 
-## 🐳 Docker Deployment
+## Docker Deployment
 
 ### Docker build
 
@@ -191,7 +191,7 @@ services:
 ---
 
 
-## 🔐 Traefik Integration
+## Traefik Integration
 
 ### ForwardAuth Middleware
 
@@ -215,7 +215,7 @@ labels:
 ---
 
 
-## 🧪 Testing
+## Testing
 
 ### Run Included Test Server
 
@@ -280,7 +280,7 @@ curl -i -H "Authorization: Bearer TOKEN_FROM_UNAUTHORIZED_USER" http://localhost
 ---
 
 
-## 🧱 Middleware Chain (Traefik)
+## Middleware Chain (Traefik)
 
 Apply middlewares in this order:
 
@@ -325,7 +325,7 @@ http:
 ---
 
 
-## 🧠 Middleware Manager Support
+## Middleware Manager Support
 
 This project supports [middleware-manager](https://github.com/hhftechnology/middleware-manager).
 
@@ -371,7 +371,7 @@ middlewares:
 ---
 
 
-## 📜 License
+## License
 
 Licensed under the [GNU General Public License v3.0](LICENSE).
 
