@@ -22,6 +22,7 @@ type Provider struct {
 	Scopes           []string
 	AuthHost         string
 	AuthPort         int
+	AuthProtocol     string // http or https
 	Realm            string
 	MCPServerURL     string // The MCP server URL for audience validation
 }
@@ -37,10 +38,15 @@ type TokenInfo struct {
 }
 
 // NewProvider creates a new Keycloak OAuth provider
-func NewProvider(clientID, clientSecret, redirectURI string, scopes []string, authHost string, authPort int, realm string, mcpServerURL string) *Provider {
+func NewProvider(clientID, clientSecret, redirectURI string, scopes []string, authHost string, authPort int, authProtocol string, realm string, mcpServerURL string) *Provider {
 	if scopes == nil || len(scopes) == 0 {
 		// Default scopes if none provided
 		scopes = []string{"openid", "email", "profile"}
+	}
+
+	// Default to https if not specified
+	if authProtocol == "" {
+		authProtocol = "https"
 	}
 
 	return &Provider{
@@ -50,6 +56,7 @@ func NewProvider(clientID, clientSecret, redirectURI string, scopes []string, au
 		Scopes:       scopes,
 		AuthHost:     authHost,
 		AuthPort:     authPort,
+		AuthProtocol: authProtocol,
 		Realm:        realm,
 		MCPServerURL: mcpServerURL,
 	}
@@ -57,7 +64,11 @@ func NewProvider(clientID, clientSecret, redirectURI string, scopes []string, au
 
 // getBaseURL returns the Keycloak base URL
 func (p *Provider) getBaseURL() string {
-	return fmt.Sprintf("http://%s:%d/realms/%s/", p.AuthHost, p.AuthPort, p.Realm)
+	// Omit port if it's the default for the protocol
+	if (p.AuthProtocol == "https" && p.AuthPort == 443) || (p.AuthProtocol == "http" && p.AuthPort == 80) {
+		return fmt.Sprintf("%s://%s/realms/%s/", p.AuthProtocol, p.AuthHost, p.Realm)
+	}
+	return fmt.Sprintf("%s://%s:%d/realms/%s/", p.AuthProtocol, p.AuthHost, p.AuthPort, p.Realm)
 }
 
 // GetBaseURL returns the Keycloak base URL (public method)

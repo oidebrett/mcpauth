@@ -32,6 +32,7 @@ func main() {
 	// Keycloak-specific configuration
 	keycloakAuthHost := flag.String("keycloakAuthHost", "localhost", "Keycloak auth server host")
 	keycloakAuthPort := flag.Int("keycloakAuthPort", 8080, "Keycloak auth server port")
+	keycloakAuthProtocol := flag.String("keycloakAuthProtocol", "https", "Keycloak auth server protocol (http or https)")
 	keycloakRealm := flag.String("keycloakRealm", "master", "Keycloak realm")
 
 	// Database and internal auth configuration
@@ -89,6 +90,9 @@ func main() {
 		if port, err := strconv.Atoi(envAuthPort); err == nil {
 			*keycloakAuthPort = port
 		}
+	}
+	if envAuthProtocol := os.Getenv("KEYCLOAK_AUTH_PROTOCOL"); envAuthProtocol != "" {
+		*keycloakAuthProtocol = envAuthProtocol
 	}
 	if envRealm := os.Getenv("KEYCLOAK_REALM"); envRealm != "" {
 		*keycloakRealm = envRealm
@@ -202,6 +206,7 @@ func main() {
 			nil, // scopes - will use defaults
 			*keycloakAuthHost,
 			*keycloakAuthPort,
+			*keycloakAuthProtocol,
 			*keycloakRealm,
 		); err != nil {
 			log.Fatal().Err(err).Msg("Failed to configure Keycloak provider")
@@ -212,6 +217,7 @@ func main() {
 			Str("redirectURI", redirectURI).
 			Str("auth_host", *keycloakAuthHost).
 			Int("auth_port", *keycloakAuthPort).
+			Str("auth_protocol", *keycloakAuthProtocol).
 			Str("realm", *keycloakRealm).
 			Msg("Configured Keycloak OAuth provider")
 	} else {

@@ -163,7 +163,7 @@ func (s *Server) ConfigureProvider(providerName, clientID, clientSecret, redirec
 }
 
 // ConfigureKeycloakProvider sets up Keycloak as the OAuth provider
-func (s *Server) ConfigureKeycloakProvider(clientID, clientSecret, redirectURI string, scopes []string, authHost string, authPort int, realm string) error {
+func (s *Server) ConfigureKeycloakProvider(clientID, clientSecret, redirectURI string, scopes []string, authHost string, authPort int, authProtocol string, realm string) error {
 	protocol := "https"
 	if s.DevMode {
 		protocol = "http"
@@ -173,7 +173,7 @@ func (s *Server) ConfigureKeycloakProvider(clientID, clientSecret, redirectURI s
 	mcpServerURL := fmt.Sprintf("%s://%s", protocol, s.OAuthDomain)
 
 	// Create the Keycloak provider
-	s.KeycloakProvider = keycloak.NewProvider(clientID, clientSecret, redirectURI, scopes, authHost, authPort, realm, mcpServerURL)
+	s.KeycloakProvider = keycloak.NewProvider(clientID, clientSecret, redirectURI, scopes, authHost, authPort, authProtocol, realm, mcpServerURL)
 	s.Provider = s.KeycloakProvider
 	s.UseInternalAuth = false
 	s.UseKeycloak = true
@@ -181,6 +181,7 @@ func (s *Server) ConfigureKeycloakProvider(clientID, clientSecret, redirectURI s
 	log.Info().
 		Str("auth_host", authHost).
 		Int("auth_port", authPort).
+		Str("auth_protocol", authProtocol).
 		Str("realm", realm).
 		Str("mcp_server_url", mcpServerURL).
 		Msg("Configured Keycloak provider")

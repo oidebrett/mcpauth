@@ -94,14 +94,15 @@ MCPAuth now supports Keycloak as an identity provider. This is useful for enterp
 
 #### Keycloak Environment Variables
 
-| Variable              | Default     | Description                              |
-|-----------------------|-------------|------------------------------------------|
-| `PROVIDER`            | *(none)*    | Set to `keycloak` to use Keycloak       |
-| `CLIENT_ID`           | *(none)*    | Keycloak client ID                       |
-| `CLIENT_SECRET`       | *(none)*    | Keycloak client secret                   |
-| `KEYCLOAK_AUTH_HOST`  | `localhost` | Keycloak server host                     |
-| `KEYCLOAK_AUTH_PORT`  | `8080`      | Keycloak server port                     |
-| `KEYCLOAK_REALM`      | `master`    | Keycloak realm name                      |
+| Variable                  | Default     | Description                              |
+|---------------------------|-------------|------------------------------------------|
+| `PROVIDER`                | *(none)*    | Set to `keycloak` to use Keycloak       |
+| `CLIENT_ID`               | *(none)*    | Keycloak client ID                       |
+| `CLIENT_SECRET`           | *(none)*    | Keycloak client secret                   |
+| `KEYCLOAK_AUTH_HOST`      | `localhost` | Keycloak server host                     |
+| `KEYCLOAK_AUTH_PORT`      | `8080`      | Keycloak server port                     |
+| `KEYCLOAK_AUTH_PROTOCOL`  | `https`     | Keycloak protocol (http or https)        |
+| `KEYCLOAK_REALM`          | `master`    | Keycloak realm name                      |
 
 #### Example Keycloak .env file
 
@@ -110,7 +111,8 @@ PROVIDER=keycloak
 CLIENT_ID=mcp-server
 CLIENT_SECRET=your-keycloak-client-secret
 KEYCLOAK_AUTH_HOST=keycloak.yourdomain.com
-KEYCLOAK_AUTH_PORT=8080
+KEYCLOAK_AUTH_PORT=443
+KEYCLOAK_AUTH_PROTOCOL=https
 KEYCLOAK_REALM=your-realm
 OAUTH_DOMAIN=oauth.yourdomain.com
 ```
