@@ -243,6 +243,10 @@ func (s *Server) SetupRoutes() {
 	s.Router.GET("/.well-known/oauth-protected-resource", s.oauthProtectedResourceHandler)
 	s.Router.OPTIONS("/.well-known/oauth-protected-resource", s.optionsHandler)
 
+	// Add MCP-specific protected resource metadata endpoint
+	s.Router.GET("/.well-known/oauth-protected-resource/mcp", s.oauthProtectedResourceHandler)
+	s.Router.OPTIONS("/.well-known/oauth-protected-resource/mcp", s.optionsHandler)
+
 	// Add OAuth client registration endpoint
 	s.Router.POST("/register", s.registerHandler)
 	s.Router.OPTIONS("/register", s.optionsHandler)
