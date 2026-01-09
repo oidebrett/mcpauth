@@ -317,7 +317,25 @@ func (s *Server) oauthAuthorizationServerHandler(c *gin.Context) {
 		protocol = "http"
 	}
 
-	// Use the OAuthDomain field
+	// If using Keycloak, return Keycloak's endpoints
+	if s.UseKeycloak && s.KeycloakProvider != nil {
+		baseURL := s.KeycloakProvider.GetBaseURL()
+		c.JSON(200, gin.H{
+			"issuer":                                baseURL,
+			"authorization_endpoint":                baseURL + "protocol/openid-connect/auth",
+			"token_endpoint":                        baseURL + "protocol/openid-connect/token",
+			"introspection_endpoint":                baseURL + "protocol/openid-connect/token/introspect",
+			"userinfo_endpoint":                     baseURL + "protocol/openid-connect/userinfo",
+			"jwks_uri":                              baseURL + "protocol/openid-connect/certs",
+			"response_types_supported":              []string{"code"},
+			"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+			"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post"},
+			"code_challenge_methods_supported":      []string{"plain", "S256"},
+		})
+		return
+	}
+
+	// Use the OAuthDomain field for internal/Google auth
 	c.JSON(200, gin.H{
 		"issuer":                                fmt.Sprintf("%s://%s", protocol, s.OAuthDomain),
 		"authorization_endpoint":                fmt.Sprintf("%s://%s/authorize", protocol, s.OAuthDomain),
