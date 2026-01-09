@@ -25,9 +25,14 @@ func main() {
 	requiredScopes := flag.String("requiredScopes", "", "Comma-separated list of required OAuth scopes")
 
 	// OAuth provider configuration
-	provider := flag.String("provider", "", "OAuth provider to use (google, internal, etc)")
+	provider := flag.String("provider", "", "OAuth provider to use (google, internal, keycloak, etc)")
 	clientID := flag.String("clientID", "", "OAuth client ID")
 	clientSecret := flag.String("clientSecret", "", "OAuth client secret")
+
+	// Keycloak-specific configuration
+	keycloakAuthHost := flag.String("keycloakAuthHost", "localhost", "Keycloak auth server host")
+	keycloakAuthPort := flag.Int("keycloakAuthPort", 8080, "Keycloak auth server port")
+	keycloakRealm := flag.String("keycloakRealm", "master", "Keycloak realm")
 
 	// Database and internal auth configuration
 	dataDir := flag.String("dataDir", "./data", "Directory for database and other data files")
@@ -74,6 +79,19 @@ func main() {
 	}
 	if envRequiredScopes := os.Getenv("REQUIRED_SCOPES"); envRequiredScopes != "" {
 		*requiredScopes = envRequiredScopes
+	}
+
+	// Check environment variables for Keycloak configuration
+	if envAuthHost := os.Getenv("KEYCLOAK_AUTH_HOST"); envAuthHost != "" {
+		*keycloakAuthHost = envAuthHost
+	}
+	if envAuthPort := os.Getenv("KEYCLOAK_AUTH_PORT"); envAuthPort != "" {
+		if port, err := strconv.Atoi(envAuthPort); err == nil {
+			*keycloakAuthPort = port
+		}
+	}
+	if envRealm := os.Getenv("KEYCLOAK_REALM"); envRealm != "" {
+		*keycloakRealm = envRealm
 	}
 
 	// Configure logging based on log level
@@ -169,6 +187,33 @@ func main() {
 		}
 
 		log.Info().Msg("Configured internal authentication provider")
+	} else if actualProvider == "keycloak" {
+		// Keycloak provider
+		if actualClientID == "" || actualClientSecret == "" {
+			log.Fatal().
+				Str("provider", actualProvider).
+				Msg("ClientID and ClientSecret must be set for Keycloak")
+		}
+
+		if err := s.ConfigureKeycloakProvider(
+			actualClientID,
+			actualClientSecret,
+			redirectURI,
+			nil, // scopes - will use defaults
+			*keycloakAuthHost,
+			*keycloakAuthPort,
+			*keycloakRealm,
+		); err != nil {
+			log.Fatal().Err(err).Msg("Failed to configure Keycloak provider")
+		}
+
+		log.Info().
+			Str("provider", actualProvider).
+			Str("redirectURI", redirectURI).
+			Str("auth_host", *keycloakAuthHost).
+			Int("auth_port", *keycloakAuthPort).
+			Str("realm", *keycloakRealm).
+			Msg("Configured Keycloak OAuth provider")
 	} else {
 		// External provider (default: google)
 		if actualClientID == "" || actualClientSecret == "" {

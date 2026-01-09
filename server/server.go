@@ -16,6 +16,7 @@ import (
 	"mcpauth/server/database"
 	"mcpauth/server/providers"
 	"mcpauth/server/providers/google"
+	"mcpauth/server/providers/keycloak"
 	"mcpauth/server/providers/local"
 	"mcpauth/server/services"
 )
@@ -35,6 +36,7 @@ type Server struct {
 	Clients          map[string]Client // Legacy in-memory clients for backward compatibility
 	Provider         providers.Provider
 	InternalProvider *local.Provider
+	KeycloakProvider *keycloak.Provider // Keycloak provider for token introspection
 	DB               *database.DB
 	UserService      *services.UserService
 	ClientService    *services.ClientService
@@ -45,6 +47,7 @@ type Server struct {
 	AllowedScopes    []string // list of scopes middleware is allowed to request
 	RequiredScopes   []string // list of scopes that must be present in tokens
 	UseInternalAuth  bool     // Whether to use internal authentication
+	UseKeycloak      bool     // Whether to use Keycloak for authentication
 }
 
 // SessionData stores OAuth state and session information
@@ -143,9 +146,11 @@ func (s *Server) ConfigureProvider(providerName, clientID, clientSecret, redirec
 	case "google":
 		s.Provider = google.NewProvider(clientID, clientSecret, redirectURI, scopes)
 		s.UseInternalAuth = false
+		s.UseKeycloak = false
 		return nil
 	case "internal":
 		s.UseInternalAuth = true
+		s.UseKeycloak = false
 		log.Info().Msg("Configured to use internal authentication")
 		return nil
 	// Add more providers here as needed
@@ -155,6 +160,32 @@ func (s *Server) ConfigureProvider(providerName, clientID, clientSecret, redirec
 	default:
 		return fmt.Errorf("unsupported provider: %s", providerName)
 	}
+}
+
+// ConfigureKeycloakProvider sets up Keycloak as the OAuth provider
+func (s *Server) ConfigureKeycloakProvider(clientID, clientSecret, redirectURI string, scopes []string, authHost string, authPort int, realm string) error {
+	protocol := "https"
+	if s.DevMode {
+		protocol = "http"
+	}
+
+	// Construct the MCP server URL for audience validation
+	mcpServerURL := fmt.Sprintf("%s://%s", protocol, s.OAuthDomain)
+
+	// Create the Keycloak provider
+	s.KeycloakProvider = keycloak.NewProvider(clientID, clientSecret, redirectURI, scopes, authHost, authPort, realm, mcpServerURL)
+	s.Provider = s.KeycloakProvider
+	s.UseInternalAuth = false
+	s.UseKeycloak = true
+
+	log.Info().
+		Str("auth_host", authHost).
+		Int("auth_port", authPort).
+		Str("realm", realm).
+		Str("mcp_server_url", mcpServerURL).
+		Msg("Configured Keycloak provider")
+
+	return nil
 }
 
 // CreateDefaultAdminUser creates a default admin user if no users exist
@@ -334,10 +365,20 @@ func (s *Server) oauthProtectedResourceHandler(c *gin.Context) {
 	// ✅ Always point to the canonical resource root (/mcp)
 	resourceURL := fmt.Sprintf("%s://%s", protocol, host)
 
+	// Determine authorization server URL
+	var authServerURL string
+	if s.UseKeycloak && s.KeycloakProvider != nil {
+		// Point to Keycloak's authorization server
+		authServerURL = s.KeycloakProvider.GetBaseURL()
+	} else {
+		// Point to internal authorization server
+		authServerURL = fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)
+	}
+
 	// Return the protected resource metadata
 	c.JSON(200, gin.H{
 		"resource":              resourceURL,
-		"authorization_servers": []string{fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)},
+		"authorization_servers": []string{authServerURL},
 		"scopes_supported":      s.RequiredScopes,
 		"resource_name":         resourceURL,
 	})
@@ -1900,19 +1941,43 @@ func (s *Server) authHandler(c *gin.Context) {
 		return
 	}
 
-	// Validate the token by checking if it exists in the session store.
-	// This is now an efficient O(1) lookup.
-	sessionData, ok := s.Sessions.GetByToken(token)
+	var sessionData SessionData
+	var ok bool
 
-	if !ok {
-		// Token not found or expired
-		log.Warn().Msg("Invalid or expired token")
-		c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\"")
-		c.JSON(401, gin.H{
-			"status":  401,
-			"message": "Invalid or expired token",
-		})
-		return
+	// If using Keycloak, validate via introspection instead of session lookup
+	if s.UseKeycloak && s.KeycloakProvider != nil {
+		tokenInfo, err := s.KeycloakProvider.IntrospectToken(token)
+		if err != nil {
+			log.Warn().Err(err).Msg("Keycloak token introspection failed")
+			c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\"")
+			c.JSON(401, gin.H{
+				"status":  401,
+				"message": "Invalid or expired token",
+			})
+			return
+		}
+
+		// Convert token info to session data format
+		sessionData = SessionData{
+			Email:  tokenInfo.Email,
+			Scopes: tokenInfo.Scopes,
+		}
+		ok = true
+	} else {
+		// Validate the token by checking if it exists in the session store.
+		// This is now an efficient O(1) lookup.
+		sessionData, ok = s.Sessions.GetByToken(token)
+
+		if !ok {
+			// Token not found or expired
+			log.Warn().Msg("Invalid or expired token")
+			c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\"")
+			c.JSON(401, gin.H{
+				"status":  401,
+				"message": "Invalid or expired token",
+			})
+			return
+		}
 	}
 
 	// Check if the session has the required scopes

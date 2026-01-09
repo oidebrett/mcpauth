@@ -72,7 +72,90 @@ https://oauth.yourdomain.com/callback
 
 Save the Client ID and Client Secret for later use.
 
-### Create .env file
+### Alternative: Set Up Keycloak OAuth
+
+MCPAuth now supports Keycloak as an identity provider. This is useful for enterprise environments that want to use their existing Keycloak infrastructure.
+
+#### Keycloak Configuration Steps
+
+1. **Create a Keycloak Realm** (or use an existing one like `master`)
+2. **Create a Client** in Keycloak:
+   - Go to your realm → Clients → Create
+   - Set Client ID (e.g., `mcp-server`)
+   - Client Protocol: `openid-connect`
+   - Access Type: `confidential`
+   - Valid Redirect URIs: Add your callback URL (e.g., `https://oauth.yourdomain.com/callback`)
+   - Save the client
+3. **Get Client Credentials**:
+   - Go to the Credentials tab
+   - Copy the Client Secret
+4. **Configure Scopes** (optional):
+   - Ensure the client has access to the scopes you need (e.g., `openid`, `email`, `profile`)
+
+#### Keycloak Environment Variables
+
+| Variable              | Default     | Description                              |
+|-----------------------|-------------|------------------------------------------|
+| `PROVIDER`            | *(none)*    | Set to `keycloak` to use Keycloak       |
+| `CLIENT_ID`           | *(none)*    | Keycloak client ID                       |
+| `CLIENT_SECRET`       | *(none)*    | Keycloak client secret                   |
+| `KEYCLOAK_AUTH_HOST`  | `localhost` | Keycloak server host                     |
+| `KEYCLOAK_AUTH_PORT`  | `8080`      | Keycloak server port                     |
+| `KEYCLOAK_REALM`      | `master`    | Keycloak realm name                      |
+
+#### Example Keycloak .env file
+
+```bash
+PROVIDER=keycloak
+CLIENT_ID=mcp-server
+CLIENT_SECRET=your-keycloak-client-secret
+KEYCLOAK_AUTH_HOST=keycloak.yourdomain.com
+KEYCLOAK_AUTH_PORT=8080
+KEYCLOAK_REALM=your-realm
+OAUTH_DOMAIN=oauth.yourdomain.com
+```
+
+#### Running with Keycloak
+
+```bash
+go run cmd/main.go \
+  -provider=keycloak \
+  -clientID=mcp-server \
+  -clientSecret=your-client-secret \
+  -keycloakAuthHost=localhost \
+  -keycloakAuthPort=8080 \
+  -keycloakRealm=master \
+  -oauthDomain=oauth.yourdomain.com
+```
+
+Or using Docker Compose:
+
+```yaml
+services:
+  mcpauth:
+    image: oideibrett/mcpauth:latest
+    environment:
+      - PROVIDER=keycloak
+      - CLIENT_ID=mcp-server
+      - CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
+      - KEYCLOAK_AUTH_HOST=keycloak
+      - KEYCLOAK_AUTH_PORT=8080
+      - KEYCLOAK_REALM=master
+      - OAUTH_DOMAIN=oauth.yourdomain.com
+    ports:
+      - "11000:11000"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+    command: start-dev
+    ports:
+      - "8080:8080"
+```
+
+### Create .env file (for Google OAuth)
 ```
 CLIENT_ID=<INSERT_VALUE_FROM_GOOGLE>
 CLIENT_SECRET=<INSERT_VALUE_FROM_GOOGLE>
