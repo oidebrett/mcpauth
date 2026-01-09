@@ -76,21 +76,134 @@ Save the Client ID and Client Secret for later use.
 
 MCPAuth now supports Keycloak as an identity provider. This is useful for enterprise environments that want to use their existing Keycloak infrastructure.
 
-#### Keycloak Configuration Steps
+For complete MCP + Keycloak setup instructions, see the official guide: [MCP Security Authorization with Keycloak](https://modelcontextprotocol.io/docs/tutorials/security/authorization#keycloak-setup)
 
-1. **Create a Keycloak Realm** (or use an existing one like `master`)
-2. **Create a Client** in Keycloak:
-   - Go to your realm → Clients → Create
-   - Set Client ID (e.g., `mcp-server`)
-   - Client Protocol: `openid-connect`
-   - Access Type: `confidential`
-   - Valid Redirect URIs: Add your callback URL (e.g., `https://oauth.yourdomain.com/callback`)
-   - Save the client
-3. **Get Client Credentials**:
-   - Go to the Credentials tab
-   - Copy the Client Secret
-4. **Configure Scopes** (optional):
-   - Ensure the client has access to the scopes you need (e.g., `openid`, `email`, `profile`)
+#### Detailed Keycloak Client Configuration
+
+##### 1. Create a Keycloak Realm
+- Use an existing realm (e.g., `master`) or create a new one
+
+##### 2. Create and Configure the Client
+
+**Basic Settings:**
+- Go to your realm → **Clients** → **Create**
+- **Client ID:** `mcp-server` (or your preferred ID)
+- **Client Protocol:** `openid-connect`
+- **Access Type / Client Authentication:** `confidential`
+- **Save** the client
+
+**Settings Tab:**
+
+**Valid Redirect URIs** (add ALL of these):
+```
+https://oauth.yourdomain.com/callback
+http://localhost:*/oauth/callback
+http://localhost:*/oauth/callback/debug
+```
+
+**Explanation:**
+- First line: Production callback for your mcpauth server
+- Second line: Development - MCP clients running locally (wildcard port)
+- Third line: MCP Inspector debug interface (includes `/debug` suffix)
+
+**Web Origins** (for CORS - add ALL of these):
+```
+https://oauth.yourdomain.com
+http://localhost:*
++
+```
+
+**Explanation:**
+- Allows CORS requests from your production domain
+- Allows CORS from any localhost port (development)
+- `+` = Keycloak shortcut meaning "allow all redirect URIs as origins"
+
+##### 3. Configure Audience Mapper (CRITICAL)
+
+This step is **required** for mcpauth to validate tokens properly.
+
+- Go to **Client Scopes** or **Mappers** tab
+- Click **Add Mapper** → **By Configuration** → **Audience**
+- **Name:** `audience-config`
+- **Mapper Type:** `Audience`
+- **Included Client Audience:** Leave empty
+- **Included Custom Audience:** `https://oauth.yourdomain.com`
+- **Add to ID token:** OFF
+- **Add to access token:** ON
+- **Save**
+
+**Important:** Set the audience to your **mcpauth gateway URL**, not individual MCP server URLs. All MCP servers protected by mcpauth should use the same audience.
+
+##### 4. Get Client Credentials
+
+- Go to the **Credentials** tab
+- Copy the **Client Secret**
+- Save this for your `KEYCLOAK_CLIENT_SECRET` environment variable
+
+##### 5. Configure Keycloak for Reverse Proxy (if behind Traefik/Nginx)
+
+**Keycloak Environment Variables:**
+```bash
+KC_PROXY=edge
+KC_HOSTNAME=keycloak.yourdomain.com
+KC_HOSTNAME_PORT=443
+KC_HOSTNAME_STRICT=false
+KC_HTTP_ENABLED=true
+```
+
+**Run Keycloak with:**
+```bash
+docker run -p 127.0.0.1:9080:8080 \
+  -e KC_PROXY=edge \
+  -e KC_HOSTNAME=keycloak.yourdomain.com \
+  -e KC_HOSTNAME_PORT=443 \
+  quay.io/keycloak/keycloak start-dev
+```
+
+#### Traefik Configuration (IMPORTANT)
+
+If using Traefik, you **must** make Keycloak's OAuth endpoints publicly accessible (no authentication required):
+
+```yaml
+http:
+  routers:
+    # Public Keycloak OAuth endpoints - NO AUTHENTICATION
+    keycloak-public:
+      rule: "Host(`keycloak.yourdomain.com`) && (PathPrefix(`/realms/{realm}/.well-known`) || PathPrefix(`/realms/{realm}/protocol/openid-connect`) || PathPrefix(`/realms/{realm}/resources`))"
+      priority: 300  # Higher priority than authenticated routes
+      service: keycloak-service
+      entrypoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+      # NO auth middleware here!
+
+    # Protected Keycloak admin endpoints - WITH AUTHENTICATION
+    keycloak-admin:
+      rule: "Host(`keycloak.yourdomain.com`)"
+      priority: 200
+      service: keycloak-service
+      middlewares:
+        - your-auth-middleware
+      entrypoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    keycloak-service:
+      loadBalancer:
+        servers:
+          - url: "http://keycloak:8080"
+```
+
+**Critical Paths That Must Be Public:**
+- `/.well-known/oauth-authorization-server` - OAuth discovery
+- `/.well-known/openid-configuration` - OpenID Connect discovery
+- `/protocol/openid-connect/auth` - Authorization endpoint
+- `/protocol/openid-connect/token` - Token endpoint
+- `/protocol/openid-connect/certs` - Public keys (JWKS)
+- `/resources/*` - Static resources
 
 #### Keycloak Environment Variables
 
@@ -156,6 +269,77 @@ services:
     ports:
       - "8080:8080"
 ```
+
+#### Testing Your Keycloak Setup
+
+##### 1. Verify Metadata Endpoints
+
+```bash
+# Check MCP protected resource metadata
+curl https://your-mcp-server.com/.well-known/oauth-protected-resource/mcp
+
+# Should return:
+# {
+#   "authorization_servers": ["https://keycloak.yourdomain.com/realms/master/"],
+#   "resource": "https://your-mcp-server.com",
+#   "scopes_supported": ["openid", "email"]
+# }
+
+# Check Keycloak OAuth metadata
+curl https://keycloak.yourdomain.com/realms/master/.well-known/oauth-authorization-server
+
+# Should return Keycloak's full OAuth configuration with endpoints
+```
+
+##### 2. Test with MCP Inspector
+
+1. Install MCP Inspector: `npm install -g @modelcontextprotocol/inspector`
+2. Run: `mcp-inspector`
+3. Add your protected MCP server URL
+4. Click "Connect" - you should be redirected to Keycloak login
+5. After login, you should be redirected back and connected
+
+##### 3. Test with Claude Desktop
+
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "protected-server": {
+      "url": "https://your-mcp-server.com"
+    }
+  }
+}
+```
+
+Restart Claude Desktop and try to use the MCP server - you'll be prompted for Keycloak authentication.
+
+#### Troubleshooting
+
+**"Page not found" when redirected to Keycloak:**
+- Check that Keycloak's OAuth endpoints are NOT protected by authentication
+- Verify the Traefik public router configuration (priority 300)
+- Test: `curl https://keycloak.yourdomain.com/realms/master/.well-known/oauth-authorization-server`
+
+**"Invalid redirect URI" error:**
+- Add the exact redirect URI to Keycloak client settings
+- For MCP Inspector, include: `http://localhost:*/oauth/callback/debug`
+- For production, include: `https://oauth.yourdomain.com/callback`
+
+**CORS errors in browser:**
+- Configure **Web Origins** in Keycloak client
+- Add `http://localhost:*` for development
+- Add `+` to allow all redirect URIs as origins
+
+**"Audience validation failed" errors:**
+- Verify the **Audience Mapper** is configured correctly
+- Audience should be: `https://oauth.yourdomain.com` (your mcpauth gateway)
+- Check mcpauth logs for the expected audience value
+
+**Token introspection fails:**
+- Verify `KEYCLOAK_AUTH_HOST`, `KEYCLOAK_AUTH_PORT`, and `KEYCLOAK_AUTH_PROTOCOL` are correct
+- Test introspection endpoint: `curl -X POST https://keycloak.yourdomain.com/realms/master/protocol/openid-connect/token/introspect`
 
 ### Create .env file (for Google OAuth)
 ```
