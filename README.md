@@ -580,8 +580,8 @@ http:
 
     redirect-regex:
       redirectRegex:
-        regex: "^https://([a-z0-9-]+)\.(.+)/\.well-known/(.+)"
-        replacement: "https://oauth.${2}/.well-known/${3}"
+        regex: "^https://[^/]+\.([^.]+\.[^./]+)/\.well-known/(.+)"
+        replacement: "https://oauth.${1}/.well-known/${2}"
         permanent: true
 
     mcp-auth:
@@ -632,8 +632,8 @@ middlewares:
     name: Regex Redirect
     type: redirectregex
     config:
-      regex: "^https://([a-z0-9-]+)\.yourdomain\.com/\.well-known/oauth-authorization-server"
-      replacement: "https://oauth.yourdomain.com/.well-known/oauth-authorization-server"
+      regex: "^https://[^/]+\.(yourdomain\.com)/\.well-known/(.+)"
+      replacement: "https://oauth.${1}/.well-known/${2}"
       permanent: true
 ```
 
