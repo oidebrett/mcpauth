@@ -1994,12 +1994,12 @@ func (s *Server) authHandler(c *gin.Context) {
 	var sessionData SessionData
 	var ok bool
 
-	// If using Keycloak, validate via introspection instead of session lookup
+	// If using Keycloak, validate JWT locally (RECOMMENDED - no introspection)
 	if s.UseKeycloak && s.KeycloakProvider != nil {
-		log.Info().Msg("[Auth] Using Keycloak introspection for token validation")
-		tokenInfo, err := s.KeycloakProvider.IntrospectToken(token)
+		log.Info().Msg("[Auth] Using Keycloak JWT validation (local, no introspection)")
+		tokenInfo, err := s.KeycloakProvider.ValidateJWT(token)
 		if err != nil {
-			log.Warn().Err(err).Msg("Keycloak token introspection failed")
+			log.Warn().Err(err).Msg("Keycloak JWT validation failed")
 			c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\"")
 			c.JSON(401, gin.H{
 				"status":  401,
@@ -2012,7 +2012,7 @@ func (s *Server) authHandler(c *gin.Context) {
 			Str("email", tokenInfo.Email).
 			Strs("scopes", tokenInfo.Scopes).
 			Int64("expires_at", tokenInfo.ExpiresAt).
-			Msg("[Auth] Keycloak token introspection successful")
+			Msg("[Auth] Keycloak JWT validation successful")
 
 		// Convert token info to session data format
 		sessionData = SessionData{
