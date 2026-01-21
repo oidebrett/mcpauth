@@ -21,6 +21,21 @@ import (
 	"mcpauth/server/services"
 )
 
+// Helper functions
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // Client represents an OAuth client
 type Client struct {
 	ClientID     string   `json:"client_id"`
@@ -1951,8 +1966,20 @@ func (s *Server) authHandler(c *gin.Context) {
 	// Extract token from header or query parameter
 	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
 		token = strings.TrimPrefix(authHeader, "Bearer ")
+		log.Info().
+			Str("source", "header").
+			Str("token_prefix", token[:min(20, len(token))]).
+			Str("token_suffix", token[max(0, len(token)-10):]).
+			Int("token_length", len(token)).
+			Msg("[Auth] Token extracted from Authorization header")
 	} else if tokenParam != "" {
 		token = tokenParam
+		log.Info().
+			Str("source", "query_param").
+			Str("token_prefix", token[:min(20, len(token))]).
+			Str("token_suffix", token[max(0, len(token)-10):]).
+			Int("token_length", len(token)).
+			Msg("[Auth] Token extracted from query parameter")
 	} else {
 		// No token provided, return 401 Unauthorized with WWW-Authenticate header
 		log.Warn().Msg("Missing authorization token")
@@ -1969,6 +1996,7 @@ func (s *Server) authHandler(c *gin.Context) {
 
 	// If using Keycloak, validate via introspection instead of session lookup
 	if s.UseKeycloak && s.KeycloakProvider != nil {
+		log.Info().Msg("[Auth] Using Keycloak introspection for token validation")
 		tokenInfo, err := s.KeycloakProvider.IntrospectToken(token)
 		if err != nil {
 			log.Warn().Err(err).Msg("Keycloak token introspection failed")
@@ -1979,6 +2007,12 @@ func (s *Server) authHandler(c *gin.Context) {
 			})
 			return
 		}
+
+		log.Info().
+			Str("email", tokenInfo.Email).
+			Strs("scopes", tokenInfo.Scopes).
+			Int64("expires_at", tokenInfo.ExpiresAt).
+			Msg("[Auth] Keycloak token introspection successful")
 
 		// Convert token info to session data format
 		sessionData = SessionData{

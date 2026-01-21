@@ -14,6 +14,21 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// Helper functions
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // Provider implements the OAuth provider interface for Keycloak
 type Provider struct {
 	ClientID         string
@@ -215,6 +230,15 @@ func (p *Provider) IntrospectToken(token string) (*TokenInfo, error) {
 	baseURL := p.getBaseURL()
 	introspectionURL := baseURL + "protocol/openid-connect/token/introspect"
 
+	// Log the introspection request details
+	log.Info().
+		Str("url", introspectionURL).
+		Str("client_id", p.ClientID).
+		Str("token_prefix", token[:min(20, len(token))]).
+		Str("token_suffix", token[max(0, len(token)-10):]).
+		Int("token_length", len(token)).
+		Msg("[Keycloak] Starting token introspection")
+
 	// Prepare introspection request
 	data := url.Values{}
 	data.Set("token", token)
@@ -255,10 +279,19 @@ func (p *Provider) IntrospectToken(token string) (*TokenInfo, error) {
 		return nil, fmt.Errorf("failed to parse introspection response: %w", err)
 	}
 
+	// Log the full introspection response
+	log.Info().
+		Interface("response", result).
+		Msg("[Keycloak] Introspection response received")
+
 	// Check if token is active
 	active, ok := result["active"].(bool)
 	if !ok || !active {
-		log.Warn().Msg("[Keycloak] Token is inactive")
+		log.Warn().
+			Interface("full_response", result).
+			Bool("active_field_present", ok).
+			Bool("active_value", active).
+			Msg("[Keycloak] Token is inactive - full details")
 		return nil, fmt.Errorf("inactive token")
 	}
 
