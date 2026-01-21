@@ -155,7 +155,24 @@ Subsequent requests will show:
 ### Docker Image
 
 **Image**: `oideibrett/mcpauth:dev`
-**Digest**: `sha256:0ba4afb8012d7f4c75694cf03a476ee7cf96342cea544c8579241ef2527ceb13`
+**Latest Digest**: `sha256:361f2ae28b46ea35caab5f495e1d20c207dad93216d72f9e01cbb2c5e8817637`
+
+### Bug Fix (2026-01-21 16:20)
+
+**Issue**: Initial implementation had a bug in RSA signature verification - was passing `0` instead of `crypto.SHA256` as the hash algorithm.
+
+**Fixed**: Updated `rsa.VerifyPKCS1v15()` call to correctly specify SHA256:
+```go
+// Before (broken):
+rsa.VerifyPKCS1v15(publicKey, 0, hashed[:], signatureBytes)
+
+// After (fixed):
+rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], signatureBytes)
+```
+
+**Error seen**: `crypto/rsa: verification error` during JWT validation
+
+**Status**: ✅ Fixed in latest image
 
 ### To Deploy
 

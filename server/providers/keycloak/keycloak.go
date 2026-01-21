@@ -1,6 +1,7 @@
 package keycloak
 
 import (
+	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
@@ -501,8 +502,8 @@ func (p *Provider) ValidateJWT(token string) (*TokenInfo, error) {
 	// Hash the message
 	hashed := sha256.Sum256([]byte(message))
 
-	// Verify RSA signature
-	if err := rsa.VerifyPKCS1v15(publicKey, 0, hashed[:], signatureBytes); err != nil {
+	// Verify RSA signature (using SHA256 hash algorithm)
+	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], signatureBytes); err != nil {
 		log.Warn().Err(err).Msg("[Keycloak] JWT signature verification failed")
 		return nil, fmt.Errorf("invalid JWT signature: %w", err)
 	}
