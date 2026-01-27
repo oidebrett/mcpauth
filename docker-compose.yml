@@ -8,16 +8,15 @@ services:
       dockerfile: Dockerfile
     command: [
       "-port=11000", 
-      "-path=/auth", 
-      "-baseDomain=oauth.yourdomain.com", 
-      "-devMode=true",
-      "-googleClientID=YOUR_GOOGLE_CLIENT_ID",
-      "-googleClientSecret=YOUR_GOOGLE_CLIENT_SECRET"
+      "-oauthDomain=${OAUTH_DOMAIN:-localhost}", 
+      "-devMode=true"
     ]
     # Alternatively, you can use environment variables:
     environment:
-      - GOOGLE_CLIENT_ID=YOUR_GOOGLE_CLIENT_ID
-      - GOOGLE_CLIENT_SECRET=YOUR_GOOGLE_CLIENT_SECRET
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - LANGWATCH_API_KEY=${LANGWATCH_API_KEY}
+      - LANGWATCH_ENDPOINT=${LANGWATCH_ENDPOINT}
       # - ALLOWED_SCOPES=openid,email,profile
       # - REQUIRED_SCOPES=openid,email
     restart: unless-stopped

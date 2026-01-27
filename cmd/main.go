@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"mcpauth/server"
+	"mcpauth/server/tracing"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -19,6 +20,8 @@ func main() {
 	port := flag.Int("port", 11000, "Port to run the server on")
 	oauthDomain := flag.String("oauthDomain", "localhost", "Domain for OAuth endpoints")
 	devMode := flag.Bool("devMode", false, "Enable development mode")
+	langwatchAPIKey := flag.String("langwatchAPIKey", "", "LangWatch API Key")
+	langwatchEndpoint := flag.String("langwatchEndpoint", "https://app.langwatch.ai/api/otel/v1/traces", "LangWatch OTLP Endpoint")
 	allowedEmails := flag.String("allowedEmails", "", "Comma-separated list of emails allowed to access protected resources (empty = allow all)")
 	logLevel := flag.Int("logLevel", 1, "Log level: 0=debug (all logs), 1=info (no secrets), 2=minimal (startup/shutdown only)")
 	allowedScopes := flag.String("allowedScopes", "", "Comma-separated list of allowed OAuth scopes")
@@ -67,6 +70,13 @@ func main() {
 		*allowedEmails = envAllowedEmails
 	}
 
+	if envLangwatchKey := os.Getenv("LANGWATCH_API_KEY"); envLangwatchKey != "" {
+		*langwatchAPIKey = envLangwatchKey
+	}
+	if envLangwatchEndpoint := os.Getenv("LANGWATCH_ENDPOINT"); envLangwatchEndpoint != "" {
+		*langwatchEndpoint = envLangwatchEndpoint
+	}
+
 	// Check environment variables for log level
 	if envLogLevel := os.Getenv("LOG_LEVEL"); envLogLevel != "" {
 		if level, err := strconv.Atoi(envLogLevel); err == nil {
@@ -109,6 +119,13 @@ func main() {
 		Str("allowedEmails", *allowedEmails).
 		Int("logLevel", *logLevel).
 		Msg("Starting with configuration")
+
+	// Initialize LangWatch if API Key is provided
+	if *langwatchAPIKey != "" {
+		shutdown := tracing.SetupLangWatch(*langwatchAPIKey, *langwatchEndpoint)
+		defer shutdown()
+		log.Info().Str("endpoint", *langwatchEndpoint).Msg("LangWatch tracing initialized")
+	}
 
 	// Create and configure the server
 	s, err := server.NewServer(*oauthDomain, *devMode, *dataDir)

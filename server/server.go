@@ -19,6 +19,10 @@ import (
 	"mcpauth/server/providers/keycloak"
 	"mcpauth/server/providers/local"
 	"mcpauth/server/services"
+
+	langwatch "github.com/langwatch/langwatch/sdk-go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // Helper functions
@@ -246,6 +250,9 @@ func (s *Server) SetupRoutes() {
 			Int("status", c.Writer.Status()).
 			Msg("Outgoing response")
 	})
+
+	// Add LangWatch tracing middleware
+	s.Router.Use(s.langwatchMiddleware())
 
 	// Add a health check endpoint
 	s.Router.GET("/health", s.healthCheckHandler)
@@ -1907,7 +1914,7 @@ func (s *Server) buildWWWAuthenticateHeader() string {
 	}
 
 	resourceMetadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", protocol, s.OAuthDomain)
-	return fmt.Sprintf("Bearer resource_metadata=\"%%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
+	return fmt.Sprintf("Bearer resource_metadata=\"%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
 }
 
 func normalizeScope(scope string) string {
@@ -1947,10 +1954,10 @@ func (s *Server) authHandler(c *gin.Context) {
 		Str("referer", c.Request.Referer()).
 		Msg("Received MCP auth request")
 
-    // Get the authorization header or query parameter
-    authHeader := c.GetHeader("Authorization")
-    tokenParam := c.Query("access_token")
-	
+	// Get the authorization header or query parameter
+	authHeader := c.GetHeader("Authorization")
+	tokenParam := c.Query("access_token")
+
 	// Set CORS headers for the MCP endpoint
 	origin := c.Request.Header.Get("Origin")
 	if origin == "" {
@@ -2069,18 +2076,52 @@ func (s *Server) authHandler(c *gin.Context) {
 		}
 	}
 
-	// Token is valid and email is authorized
-	log.Info().Str("email", userEmail).Msg("Authentication and authorization successful")
+	// Identify the user in LangWatch
+	if spanObj, exists := c.Get("langwatch_span"); exists {
+		if span, ok := spanObj.(*langwatch.Span); ok {
+			span.SetAttributes(attribute.String(string(langwatch.AttributeLangWatchCustomerID), userEmail))
+			span.RecordOutput(map[string]interface{}{
+				"authenticated": true,
+				"email":         userEmail,
+				"scopes":        sessionData.Scopes,
+			})
+		}
+	}
 
-	// Add X-Forwarded-User header with the authenticated user's email
-	c.Header("X-Forwarded-User", userEmail)
-	if len(sessionData.Scopes) > 0 {
-		c.Header("X-Forwarded-Scopes", strings.Join(sessionData.Scopes, " "))
-	}	
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(`You're authenticated as '`+userEmail+`'`))
 
 	//Removed this code
-	//c.Header("X-Forwarded-User", userEmail)
 	//c.Status(http.StatusOK)
 
+}
+
+func (s *Server) langwatchMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tracer := langwatch.Tracer("mcpauth")
+		ctx, span := tracer.Start(c.Request.Context(), "MCP Auth: "+c.Request.Method+" "+c.Request.URL.Path)
+		defer span.End()
+
+		// Store the span in Gin context for child handlers
+		c.Set("langwatch_span", span)
+
+		// Pass the span-enriched context to the request
+		c.Request = c.Request.WithContext(ctx)
+
+		// Set initial attributes
+		span.SetAttributes(
+			attribute.String("http.method", c.Request.Method),
+			attribute.String("http.path", c.Request.URL.Path),
+		)
+		if version := c.GetHeader("mcp-protocol-version"); version != "" {
+			span.SetAttributes(attribute.String("mcp.protocol_version", version))
+		}
+
+		c.Next()
+
+		// Capture the status code
+		span.SetAttributes(attribute.Int("http.status_code", c.Writer.Status()))
+		if c.Writer.Status() >= 400 {
+			span.SetStatus(codes.Error, "Request failed with status "+strconv.Itoa(c.Writer.Status()))
+		}
+	}
 }
