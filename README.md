@@ -640,6 +640,197 @@ middlewares:
 ---
 
 
+## Edge Auth (CF_Authorization Cookie Flow)
+
+MCPAuth can act as a replacement for Cloudflare Access when protecting an OpenShell-style gateway behind Traefik. When enabled, it provides:
+
+- **`/auth/connect`** — Browser-based login relay that authenticates the user via your IdP (Keycloak, Google, or internal), issues a `CF_Authorization` JWT cookie, and serves a connect page that relays the token to the CLI's localhost callback server.
+- **`/_ws_tunnel`** — Forward-auth endpoint for Traefik that validates the `CF_Authorization` cookie before allowing WebSocket connections through to the gateway.
+- **`/auth` (existing)** — Also accepts the `CF_Authorization` cookie as a fallback token source when edge auth is enabled.
+
+Edge auth runs **in parallel** with the existing OAuth/Bearer token flow. The same mcpauth instance can serve both MCP OAuth clients and OpenShell gateway browser logins using the same IdP.
+
+### Edge Auth Environment Variables
+
+| Variable            | Flag               | Default        | Description                                           |
+|---------------------|--------------------|----------------|-------------------------------------------------------|
+| `ENABLE_EDGE_AUTH`  | `-enableEdgeAuth`  | `false`        | Enable edge auth endpoints                            |
+| `COOKIE_DOMAIN`     | `-cookieDomain`    | `OAUTH_DOMAIN` | Domain for the `CF_Authorization` cookie              |
+
+All other provider config (`PROVIDER`, `CLIENT_ID`, `CLIENT_SECRET`, Keycloak settings, etc.) is shared with the existing OAuth flow.
+
+### Docker Compose with Edge Auth
+
+```yaml
+services:
+  mcpauth:
+    image: oideibrett/mcpauth:edge_auth
+    environment:
+      - ENABLE_EDGE_AUTH=true
+      - COOKIE_DOMAIN=.yourdomain.com
+      - OAUTH_DOMAIN=oauth.yourdomain.com
+      - PROVIDER=keycloak
+      - CLIENT_ID=mcp-server
+      - CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
+      - KEYCLOAK_AUTH_HOST=keycloak.yourdomain.com
+      - KEYCLOAK_AUTH_PORT=443
+      - KEYCLOAK_AUTH_PROTOCOL=https
+      - KEYCLOAK_REALM=master
+    restart: unless-stopped
+
+  # If using internal auth instead of Keycloak:
+  # mcpauth:
+  #   image: oideibrett/mcpauth:edge_auth
+  #   environment:
+  #     - ENABLE_EDGE_AUTH=true
+  #     - COOKIE_DOMAIN=.yourdomain.com
+  #     - OAUTH_DOMAIN=oauth.yourdomain.com
+  #     - DEV_MODE=false
+  #   command: ["-useInternalAuth"]
+```
+
+### Traefik Dynamic Configuration for Edge Auth
+
+Add the following to your Traefik dynamic configuration YAML file. This sets up two things: the `edge-auth` forwardAuth middleware and the routers that expose the mcpauth login endpoints and protect the gateway WebSocket tunnel.
+
+#### Middlewares
+
+```yaml
+http:
+  middlewares:
+    # Forward-auth middleware for protecting the WebSocket tunnel.
+    # Traefik calls this before proxying /_ws_tunnel requests to the gateway.
+    edge-auth:
+      forwardAuth:
+        address: "http://mcpauth:11000/_ws_tunnel"
+        authResponseHeaders:
+          - X-Forwarded-User
+          - X-Forwarded-Scopes
+
+    # Existing MCP Bearer-token auth (unchanged)
+    mcp-auth:
+      forwardAuth:
+        address: "http://mcpauth:11000/auth"
+        authResponseHeaders:
+          - X-Forwarded-User
+          - X-Forwarded-Scopes
+```
+
+#### Routers
+
+```yaml
+http:
+  routers:
+    # ── MCPAuth login endpoints (NO auth middleware) ──────────────
+    # These must be publicly accessible — they ARE the login flow.
+    mcpauth-connect:
+      rule: "Host(`oauth.yourdomain.com`) && PathPrefix(`/auth/connect`)"
+      service: mcpauth-service
+      entrypoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+    mcpauth-authorize:
+      rule: "Host(`oauth.yourdomain.com`) && (PathPrefix(`/authorize`) || PathPrefix(`/callback`) || PathPrefix(`/internal`))"
+      service: mcpauth-service
+      entrypoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+    # ── MCPAuth metadata & health (NO auth middleware) ────────────
+    mcpauth-public:
+      rule: "Host(`oauth.yourdomain.com`) && (PathPrefix(`/.well-known`) || Path(`/health`))"
+      service: mcpauth-service
+      entrypoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+    # ── Gateway WebSocket tunnel (PROTECTED by edge-auth) ─────────
+    # This is the route to your actual gateway service, not mcpauth.
+    # Traefik calls the edge-auth forwardAuth middleware first;
+    # if the CF_Authorization cookie is valid, the request is proxied.
+    gateway-ws-tunnel:
+      rule: "Host(`gateway.yourdomain.com`) && PathPrefix(`/_ws_tunnel`)"
+      service: gateway-service
+      middlewares:
+        - edge-auth
+      entrypoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+    # ── Existing MCP server routes (PROTECTED by mcp-auth) ───────
+    # Unchanged — Bearer token auth continues to work as before.
+    mcp-server:
+      rule: "Host(`mcp.yourdomain.com`)"
+      service: mcp-service
+      middlewares:
+        - mcp-auth
+      entrypoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    mcpauth-service:
+      loadBalancer:
+        servers:
+          - url: "http://mcpauth:11000"
+
+    gateway-service:
+      loadBalancer:
+        servers:
+          - url: "http://gateway:8080"
+
+    mcp-service:
+      loadBalancer:
+        servers:
+          - url: "http://mcp-server:3000"
+```
+
+### How the Edge Auth Flow Works
+
+1. The CLI opens the user's browser to `https://oauth.yourdomain.com/auth/connect?callback_port=<port>&code=<code>`
+2. MCPAuth checks for a `CF_Authorization` cookie — none exists yet
+3. MCPAuth redirects through the OAuth login flow (Keycloak, Google, or internal)
+4. After successful IdP login, MCPAuth mints a `CF_Authorization` JWT cookie (24h TTL) and redirects back to `/auth/connect`
+5. Now the cookie is present — MCPAuth serves the connect page showing the confirmation code
+6. The user clicks "Connect" — JavaScript POSTs the token to the CLI's localhost callback
+7. Subsequent `/_ws_tunnel` WebSocket connections include the cookie and are validated by the `edge-auth` forwardAuth middleware
+
+### Testing Edge Auth with curl
+
+```bash
+# Start mcpauth with edge auth enabled (internal auth, dev mode)
+go run cmd/main.go -devMode -useInternalAuth -enableEdgeAuth -port 11000 -oauthDomain localhost:11000
+
+# 1. /auth/connect without cookie → redirects to login
+curl -v 'http://localhost:11000/auth/connect?callback_port=9999&code=TEST-1234'
+# Expect: 307 redirect to /authorize
+
+# 2. /_ws_tunnel without cookie → 401
+curl -v http://localhost:11000/_ws_tunnel
+# Expect: 401 {"error":"authentication required"}
+
+# 3. /_ws_tunnel with valid CF_Authorization cookie → 200
+curl -v -H "Cookie: CF_Authorization=<jwt-from-login-flow>" http://localhost:11000/_ws_tunnel
+# Expect: 200 with X-Forwarded-User header
+
+# 4. /auth with CF_Authorization cookie → 200 (fallback token source)
+curl -v -H "Cookie: CF_Authorization=<jwt-from-login-flow>" http://localhost:11000/auth
+# Expect: 200 with X-Forwarded-User header
+
+# 5. /_ws_tunnel with invalid cookie → 401
+curl -v -H "Cookie: CF_Authorization=bad-token" http://localhost:11000/_ws_tunnel
+# Expect: 401 {"error":"invalid or expired token"}
+```
+
+---
+
+
 ## License
 
 Licensed under the [GNU General Public License v3.0](LICENSE).

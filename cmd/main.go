@@ -39,6 +39,10 @@ func main() {
 	dataDir := flag.String("dataDir", "./data", "Directory for database and other data files")
 	useInternalAuth := flag.Bool("useInternalAuth", false, "Use internal authentication instead of external provider")
 
+	// Edge auth (CF_Authorization cookie flow)
+	enableEdgeAuth := flag.Bool("enableEdgeAuth", false, "Enable edge auth endpoints (/auth/connect, /_ws_tunnel) for CF_Authorization cookie flow")
+	cookieDomain := flag.String("cookieDomain", "", "Domain for CF_Authorization cookie (defaults to oauthDomain)")
+
 	// Default admin user (only used if no users exist and internal auth is enabled)
 	adminUsername := flag.String("adminUsername", "admin", "Default admin username")
 	adminEmail := flag.String("adminEmail", "admin@localhost", "Default admin email")
@@ -98,6 +102,14 @@ func main() {
 		*keycloakRealm = envRealm
 	}
 
+	// Check environment variables for edge auth configuration
+	if envEdgeAuth := os.Getenv("ENABLE_EDGE_AUTH"); envEdgeAuth != "" {
+		*enableEdgeAuth = strings.ToLower(envEdgeAuth) == "true"
+	}
+	if envCookieDomain := os.Getenv("COOKIE_DOMAIN"); envCookieDomain != "" {
+		*cookieDomain = envCookieDomain
+	}
+
 	// Configure logging based on log level
 	configureLogging(*logLevel)
 
@@ -114,6 +126,14 @@ func main() {
 	s, err := server.NewServer(*oauthDomain, *devMode, *dataDir)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create server")
+	}
+
+	// Configure edge auth
+	s.EnableEdgeAuth = *enableEdgeAuth
+	if *cookieDomain != "" {
+		s.CookieDomain = *cookieDomain
+	} else {
+		s.CookieDomain = *oauthDomain
 	}
 
 	// Configure allowed emails if provided
@@ -237,6 +257,9 @@ func main() {
 			Str("redirectURI", redirectURI).
 			Msg("Configured OAuth provider")
 	}
+
+	// Register edge auth routes (must happen after EnableEdgeAuth is set)
+	s.SetupEdgeAuthRoutes()
 
 	// Start the server
 	address := fmt.Sprintf(":%d", *port)

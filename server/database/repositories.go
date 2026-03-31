@@ -176,6 +176,32 @@ func (r *ClientRepository) CreateClient(clientName string, redirectURIs []string
 	return r.GetClientByID(clientID)
 }
 
+// CreateClientWithID creates a new OAuth client with a specific client ID.
+func (r *ClientRepository) CreateClientWithID(clientID, clientName string, redirectURIs []string, scopes []string) (*OAuthClient, error) {
+	clientSecret := uuid.New().String()
+
+	redirectURIsJSON, err := json.Marshal(redirectURIs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal redirect URIs: %w", err)
+	}
+
+	scopesJSON, err := json.Marshal(scopes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal scopes: %w", err)
+	}
+
+	query := `
+		INSERT INTO oauth_clients (client_id, client_secret, client_name, redirect_uris, scopes)
+		VALUES (?, ?, ?, ?, ?)
+	`
+	_, err = r.db.Exec(query, clientID, clientSecret, clientName, string(redirectURIsJSON), string(scopesJSON))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create client: %w", err)
+	}
+
+	return r.GetClientByID(clientID)
+}
+
 // GetClientByID retrieves a client by client ID
 func (r *ClientRepository) GetClientByID(clientID string) (*OAuthClient, error) {
 	client := &OAuthClient{}
