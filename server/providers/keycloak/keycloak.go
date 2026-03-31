@@ -198,6 +198,13 @@ func (p *Provider) ExchangeToken(code string, codeVerifier string) (string, stri
 
 	// Check for error response
 	if resp.StatusCode != http.StatusOK {
+		log.Error().
+			Str("token_url", tokenURL).
+			Str("client_id", p.ClientID).
+			Str("redirect_uri", p.RedirectURI).
+			Int("status", resp.StatusCode).
+			Str("response", string(body)).
+			Msg("Keycloak token exchange failed")
 		return "", "", nil, fmt.Errorf("token exchange failed: %s - %s", resp.Status, string(body))
 	}
 

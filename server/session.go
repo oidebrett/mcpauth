@@ -119,16 +119,23 @@ func (s *SessionStore) GetByToken(token string) (SessionData, bool) {
         return SessionData{}, false
     }
 
-    // 🔑 Extract scopes (if present in JWT claims)
+    // Extract email (if present in JWT claims)
+    var email string
+    if rawEmail, ok := (*claims)["email"].(string); ok {
+        email = rawEmail
+    }
+
+    // Extract scopes (if present in JWT claims)
     var scopes []string
     if rawScopes, ok := (*claims)["scopes"]; ok {
-        scopes = toStringSlice(rawScopes) // your helper already converts []interface{} → []string
+        scopes = toStringSlice(rawScopes)
     }
 
     session := SessionData{
         AccessToken: token,
         ExpiresAt:   time.Unix(int64(exp), 0),
-        Scopes:      scopes, // ✅ now included
+        Email:       email,
+        Scopes:      scopes,
     }
 
     return session, true
@@ -150,6 +157,20 @@ func (s *SessionStore) CleanupExpired() {
 	if cleaned > 0 {
 		log.Info().Int("count", cleaned).Msg("Cleaned up expired sessions")
 	}
+}
+
+// mintCFAuthorizationJWT creates a signed JWT for the CF_Authorization cookie.
+func mintCFAuthorizationJWT(email string, scopes []string, ttl time.Duration) (string, error) {
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"sub":    email,
+		"email":  email,
+		"scopes": scopes,
+		"iat":    now.Unix(),
+		"exp":    now.Add(ttl).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtSecret)
 }
 
 func validateJWT(tokenStr string) (*jwt.MapClaims, error) {

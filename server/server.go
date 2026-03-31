@@ -63,6 +63,8 @@ type Server struct {
 	RequiredScopes   []string // list of scopes that must be present in tokens
 	UseInternalAuth  bool     // Whether to use internal authentication
 	UseKeycloak      bool     // Whether to use Keycloak for authentication
+	EnableEdgeAuth   bool     // Whether to enable edge auth (CF_Authorization cookie) endpoints
+	CookieDomain     string   // Domain for the CF_Authorization cookie
 }
 
 // SessionData stores OAuth state and session information
@@ -304,6 +306,24 @@ func (s *Server) SetupRoutes() {
 
 	// Generic auth handler for forwardAuth
 	s.Router.Any("/auth", s.authHandler)
+
+}
+
+// SetupEdgeAuthRoutes registers edge auth routes. Must be called after EnableEdgeAuth is set.
+func (s *Server) SetupEdgeAuthRoutes() {
+	if !s.EnableEdgeAuth {
+		return
+	}
+
+	s.Router.GET("/auth/connect", s.edgeAuthConnectHandler)
+	s.Router.GET("/auth/connect/callback", s.edgeAuthConnectCallbackHandler)
+	s.Router.Any("/_ws_tunnel", s.edgeAuthWsTunnelHandler)
+
+	// Register edge-auth client for internal auth redirect URI validation
+	if err := s.registerEdgeAuthClient(); err != nil {
+		log.Warn().Err(err).Msg("Failed to register edge auth client")
+	}
+	log.Info().Msg("Edge auth endpoints enabled: /auth/connect, /_ws_tunnel")
 }
 
 // healthCheckHandler returns a 200 OK response
@@ -615,12 +635,17 @@ func (s *Server) callbackHandler(c *gin.Context) {
 		return
 	}
 
-	// Extract email from user info
-	email, ok := userInfo["email"].(string)
-	if !ok {
-		log.Error().Interface("user_info", userInfo).Msg("Email not found in user info")
-		c.JSON(500, gin.H{"error": "server_error"})
-		return
+	// Extract email from user info, fall back to preferred_username
+	email, _ := userInfo["email"].(string)
+	if email == "" {
+		if username, ok := userInfo["preferred_username"].(string); ok && username != "" {
+			email = username
+			log.Warn().Str("preferred_username", username).Msg("Email not found in user info, using preferred_username")
+		} else {
+			log.Error().Interface("user_info", userInfo).Msg("Neither email nor preferred_username found in user info")
+			c.JSON(500, gin.H{"error": "server_error"})
+			return
+		}
 	}
 
 	log.Info().Str("email", email).Msg("User authenticated")
@@ -1907,7 +1932,7 @@ func (s *Server) buildWWWAuthenticateHeader() string {
 	}
 
 	resourceMetadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", protocol, s.OAuthDomain)
-	return fmt.Sprintf("Bearer resource_metadata=\"%%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
+	return fmt.Sprintf("Bearer resource_metadata=\"%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
 }
 
 func normalizeScope(scope string) string {
@@ -1980,6 +2005,23 @@ func (s *Server) authHandler(c *gin.Context) {
 			Str("token_suffix", token[max(0, len(token)-10):]).
 			Int("token_length", len(token)).
 			Msg("[Auth] Token extracted from query parameter")
+	} else if s.EnableEdgeAuth {
+		// Try CF_Authorization cookie (edge auth flow)
+		if cfToken := extractCFAuthCookie(c); cfToken != "" {
+			token = cfToken
+			log.Info().
+				Str("source", "cf_authorization_cookie").
+				Int("token_length", len(token)).
+				Msg("[Auth] Token extracted from CF_Authorization cookie")
+		} else {
+			log.Warn().Msg("Missing authorization token")
+			c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader())
+			c.JSON(401, gin.H{
+				"status":  401,
+				"message": "Unauthorized",
+			})
+			return
+		}
 	} else {
 		// No token provided, return 401 Unauthorized with WWW-Authenticate header
 		log.Warn().Msg("Missing authorization token")

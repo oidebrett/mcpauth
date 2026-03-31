@@ -147,6 +147,11 @@ func (s *ClientService) CreateClient(clientName string, redirectURIs []string, s
 	return s.clientRepo.CreateClient(clientName, redirectURIs, scopes)
 }
 
+// CreateEdgeAuthClient creates an OAuth client with a specific client ID for edge auth.
+func (s *ClientService) CreateEdgeAuthClient(clientID string, redirectURIs []string, scopes []string) (*database.OAuthClient, error) {
+	return s.clientRepo.CreateClientWithID(clientID, "Edge Auth Connect", redirectURIs, scopes)
+}
+
 // GetClient retrieves a client by client ID
 func (s *ClientService) GetClient(clientID string) (*database.OAuthClient, error) {
 	return s.clientRepo.GetClientByID(clientID)
