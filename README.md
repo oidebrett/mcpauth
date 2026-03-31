@@ -691,89 +691,67 @@ services:
 
 ### Traefik Dynamic Configuration for Edge Auth
 
-Add the following to your Traefik dynamic configuration YAML file. This sets up two things: the `edge-auth` forwardAuth middleware and the routers that expose the mcpauth login endpoints and protect the gateway WebSocket tunnel.
+Edge auth requires three Traefik components: the `edge-auth` forwardAuth middleware, a high-priority login router (so the login flow isn't blocked by forwardAuth), and the gateway router with the middleware applied.
 
-#### Middlewares
+#### 1. ForwardAuth Middleware
+
+Add an `edge-auth` forwardAuth middleware. Traefik calls mcpauth's `/_ws_tunnel` endpoint to validate the `CF_Authorization` cookie before proxying to the gateway.
 
 ```yaml
 http:
   middlewares:
-    # Forward-auth middleware for protecting the WebSocket tunnel.
-    # Traefik calls this before proxying /_ws_tunnel requests to the gateway.
     edge-auth:
       forwardAuth:
         address: "http://mcpauth:11000/_ws_tunnel"
         authResponseHeaders:
           - X-Forwarded-User
           - X-Forwarded-Scopes
-
-    # Existing MCP Bearer-token auth (unchanged)
-    mcp-auth:
-      forwardAuth:
-        address: "http://mcpauth:11000/auth"
-        authResponseHeaders:
-          - X-Forwarded-User
-          - X-Forwarded-Scopes
 ```
 
-#### Routers
+#### 2. Routers
+
+You need two routers on the **gateway domain** with different priorities:
 
 ```yaml
 http:
   routers:
-    # ── MCPAuth login endpoints (NO auth middleware) ──────────────
-    # These must be publicly accessible — they ARE the login flow.
-    mcpauth-connect:
-      rule: "Host(`oauth.yourdomain.com`) && PathPrefix(`/auth/connect`)"
+    # ── Login flow (NO middleware, priority 300) ─────────────────
+    # CRITICAL: The login paths must have a HIGHER priority than
+    # any router that applies the edge-auth middleware on the same
+    # domain. Otherwise forwardAuth intercepts the login redirects
+    # and returns 401 before the user can log in.
+    gateway-login:
+      rule: "Host(`gateway.yourdomain.com`) && (PathPrefix(`/auth/connect`) || PathPrefix(`/authorize`) || PathPrefix(`/callback`) || PathPrefix(`/internal`))"
       service: mcpauth-service
-      entrypoints:
+      priority: 300
+      entryPoints:
         - websecure
       tls:
         certResolver: letsencrypt
 
-    mcpauth-authorize:
-      rule: "Host(`oauth.yourdomain.com`) && (PathPrefix(`/authorize`) || PathPrefix(`/callback`) || PathPrefix(`/internal`))"
-      service: mcpauth-service
-      entrypoints:
-        - websecure
-      tls:
-        certResolver: letsencrypt
-
-    # ── MCPAuth metadata & health (NO auth middleware) ────────────
-    mcpauth-public:
-      rule: "Host(`oauth.yourdomain.com`) && (PathPrefix(`/.well-known`) || Path(`/health`))"
-      service: mcpauth-service
-      entrypoints:
-        - websecure
-      tls:
-        certResolver: letsencrypt
-
-    # ── Gateway WebSocket tunnel (PROTECTED by edge-auth) ─────────
-    # This is the route to your actual gateway service, not mcpauth.
-    # Traefik calls the edge-auth forwardAuth middleware first;
-    # if the CF_Authorization cookie is valid, the request is proxied.
-    gateway-ws-tunnel:
-      rule: "Host(`gateway.yourdomain.com`) && PathPrefix(`/_ws_tunnel`)"
+    # ── Gateway (PROTECTED by edge-auth, priority 250) ───────────
+    # All other requests to the gateway domain go through forwardAuth.
+    # The edge-auth middleware validates the CF_Authorization cookie;
+    # if valid (200), Traefik proxies to the gateway service.
+    # If invalid/missing (401), the request is blocked.
+    gateway-protected:
+      rule: "Host(`gateway.yourdomain.com`)"
       service: gateway-service
       middlewares:
         - edge-auth
-      entrypoints:
+      priority: 250
+      entryPoints:
         - websecure
       tls:
         certResolver: letsencrypt
+```
 
-    # ── Existing MCP server routes (PROTECTED by mcp-auth) ───────
-    # Unchanged — Bearer token auth continues to work as before.
-    mcp-server:
-      rule: "Host(`mcp.yourdomain.com`)"
-      service: mcp-service
-      middlewares:
-        - mcp-auth
-      entrypoints:
-        - websecure
-      tls:
-        certResolver: letsencrypt
+> **Why two routers?** The gateway's catch-all router applies `edge-auth` forwardAuth to all requests. But the login flow itself (`/auth/connect` → `/authorize` → IdP → `/callback`) must reach mcpauth without authentication — these paths ARE the login. The higher-priority (300 vs 250) login router matches first and routes directly to mcpauth.
 
+#### 3. Services
+
+```yaml
+http:
   services:
     mcpauth-service:
       loadBalancer:
@@ -784,11 +762,32 @@ http:
       loadBalancer:
         servers:
           - url: "http://gateway:8080"
+```
 
-    mcp-service:
-      loadBalancer:
-        servers:
-          - url: "http://mcp-server:3000"
+#### Existing MCP OAuth Routes (Unchanged)
+
+The existing Bearer-token OAuth routes on the `oauth.yourdomain.com` domain are completely unaffected:
+
+```yaml
+http:
+  middlewares:
+    mcp-auth:
+      forwardAuth:
+        address: "http://mcpauth:11000/auth"
+        authResponseHeaders:
+          - X-Forwarded-User
+          - X-Forwarded-Scopes
+
+  routers:
+    mcp-server:
+      rule: "Host(`mcp.yourdomain.com`)"
+      service: mcp-service
+      middlewares:
+        - mcp-auth
+      entrypoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
 ```
 
 ### How the Edge Auth Flow Works
@@ -800,6 +799,11 @@ http:
 5. Now the cookie is present — MCPAuth serves the connect page showing the confirmation code
 6. The user clicks "Connect" — JavaScript POSTs the token to the CLI's localhost callback
 7. Subsequent `/_ws_tunnel` WebSocket connections include the cookie and are validated by the `edge-auth` forwardAuth middleware
+
+### Keycloak Notes
+
+- MCPAuth extracts the user's `email` from the Keycloak userinfo response. If no email is set on the Keycloak user, it falls back to `preferred_username`.
+- Ensure your Keycloak client has `email` and `openid` in its client scopes so the email claim is returned.
 
 ### Testing Edge Auth with curl
 

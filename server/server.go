@@ -635,12 +635,17 @@ func (s *Server) callbackHandler(c *gin.Context) {
 		return
 	}
 
-	// Extract email from user info
-	email, ok := userInfo["email"].(string)
-	if !ok {
-		log.Error().Interface("user_info", userInfo).Msg("Email not found in user info")
-		c.JSON(500, gin.H{"error": "server_error"})
-		return
+	// Extract email from user info, fall back to preferred_username
+	email, _ := userInfo["email"].(string)
+	if email == "" {
+		if username, ok := userInfo["preferred_username"].(string); ok && username != "" {
+			email = username
+			log.Warn().Str("preferred_username", username).Msg("Email not found in user info, using preferred_username")
+		} else {
+			log.Error().Interface("user_info", userInfo).Msg("Neither email nor preferred_username found in user info")
+			c.JSON(500, gin.H{"error": "server_error"})
+			return
+		}
 	}
 
 	log.Info().Str("email", email).Msg("User authenticated")
