@@ -16,9 +16,25 @@ import (
 	"mcpauth/server/database"
 	"mcpauth/server/providers"
 	"mcpauth/server/providers/google"
+	"mcpauth/server/providers/keycloak"
 	"mcpauth/server/providers/local"
 	"mcpauth/server/services"
 )
+
+// Helper functions
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
 
 // Client represents an OAuth client
 type Client struct {
@@ -35,6 +51,7 @@ type Server struct {
 	Clients          map[string]Client // Legacy in-memory clients for backward compatibility
 	Provider         providers.Provider
 	InternalProvider *local.Provider
+	KeycloakProvider *keycloak.Provider // Keycloak provider for token introspection
 	DB               *database.DB
 	UserService      *services.UserService
 	ClientService    *services.ClientService
@@ -45,6 +62,9 @@ type Server struct {
 	AllowedScopes    []string // list of scopes middleware is allowed to request
 	RequiredScopes   []string // list of scopes that must be present in tokens
 	UseInternalAuth  bool     // Whether to use internal authentication
+	UseKeycloak      bool     // Whether to use Keycloak for authentication
+	EnableEdgeAuth   bool     // Whether to enable edge auth (CF_Authorization cookie) endpoints
+	CookieDomain     string   // Domain for the CF_Authorization cookie
 }
 
 // SessionData stores OAuth state and session information
@@ -143,9 +163,11 @@ func (s *Server) ConfigureProvider(providerName, clientID, clientSecret, redirec
 	case "google":
 		s.Provider = google.NewProvider(clientID, clientSecret, redirectURI, scopes)
 		s.UseInternalAuth = false
+		s.UseKeycloak = false
 		return nil
 	case "internal":
 		s.UseInternalAuth = true
+		s.UseKeycloak = false
 		log.Info().Msg("Configured to use internal authentication")
 		return nil
 	// Add more providers here as needed
@@ -155,6 +177,33 @@ func (s *Server) ConfigureProvider(providerName, clientID, clientSecret, redirec
 	default:
 		return fmt.Errorf("unsupported provider: %s", providerName)
 	}
+}
+
+// ConfigureKeycloakProvider sets up Keycloak as the OAuth provider
+func (s *Server) ConfigureKeycloakProvider(clientID, clientSecret, redirectURI string, scopes []string, authHost string, authPort int, authProtocol string, realm string) error {
+	protocol := "https"
+	if s.DevMode {
+		protocol = "http"
+	}
+
+	// Construct the MCP server URL for audience validation
+	mcpServerURL := fmt.Sprintf("%s://%s", protocol, s.OAuthDomain)
+
+	// Create the Keycloak provider
+	s.KeycloakProvider = keycloak.NewProvider(clientID, clientSecret, redirectURI, scopes, authHost, authPort, authProtocol, realm, mcpServerURL)
+	s.Provider = s.KeycloakProvider
+	s.UseInternalAuth = false
+	s.UseKeycloak = true
+
+	log.Info().
+		Str("auth_host", authHost).
+		Int("auth_port", authPort).
+		Str("auth_protocol", authProtocol).
+		Str("realm", realm).
+		Str("mcp_server_url", mcpServerURL).
+		Msg("Configured Keycloak provider")
+
+	return nil
 }
 
 // CreateDefaultAdminUser creates a default admin user if no users exist
@@ -211,6 +260,10 @@ func (s *Server) SetupRoutes() {
 	s.Router.GET("/.well-known/oauth-protected-resource", s.oauthProtectedResourceHandler)
 	s.Router.OPTIONS("/.well-known/oauth-protected-resource", s.optionsHandler)
 
+	// Add MCP-specific protected resource metadata endpoint
+	s.Router.GET("/.well-known/oauth-protected-resource/mcp", s.oauthProtectedResourceHandler)
+	s.Router.OPTIONS("/.well-known/oauth-protected-resource/mcp", s.optionsHandler)
+
 	// Add OAuth client registration endpoint
 	s.Router.POST("/register", s.registerHandler)
 	s.Router.OPTIONS("/register", s.optionsHandler)
@@ -253,6 +306,24 @@ func (s *Server) SetupRoutes() {
 
 	// Generic auth handler for forwardAuth
 	s.Router.Any("/auth", s.authHandler)
+
+}
+
+// SetupEdgeAuthRoutes registers edge auth routes. Must be called after EnableEdgeAuth is set.
+func (s *Server) SetupEdgeAuthRoutes() {
+	if !s.EnableEdgeAuth {
+		return
+	}
+
+	s.Router.GET("/auth/connect", s.edgeAuthConnectHandler)
+	s.Router.GET("/auth/connect/callback", s.edgeAuthConnectCallbackHandler)
+	s.Router.Any("/_ws_tunnel", s.edgeAuthWsTunnelHandler)
+
+	// Register edge-auth client for internal auth redirect URI validation
+	if err := s.registerEdgeAuthClient(); err != nil {
+		log.Warn().Err(err).Msg("Failed to register edge auth client")
+	}
+	log.Info().Msg("Edge auth endpoints enabled: /auth/connect, /_ws_tunnel")
 }
 
 // healthCheckHandler returns a 200 OK response
@@ -285,7 +356,25 @@ func (s *Server) oauthAuthorizationServerHandler(c *gin.Context) {
 		protocol = "http"
 	}
 
-	// Use the OAuthDomain field
+	// If using Keycloak, return Keycloak's endpoints
+	if s.UseKeycloak && s.KeycloakProvider != nil {
+		baseURL := s.KeycloakProvider.GetBaseURL()
+		c.JSON(200, gin.H{
+			"issuer":                                baseURL,
+			"authorization_endpoint":                baseURL + "protocol/openid-connect/auth",
+			"token_endpoint":                        baseURL + "protocol/openid-connect/token",
+			"introspection_endpoint":                baseURL + "protocol/openid-connect/token/introspect",
+			"userinfo_endpoint":                     baseURL + "protocol/openid-connect/userinfo",
+			"jwks_uri":                              baseURL + "protocol/openid-connect/certs",
+			"response_types_supported":              []string{"code"},
+			"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+			"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post"},
+			"code_challenge_methods_supported":      []string{"plain", "S256"},
+		})
+		return
+	}
+
+	// Use the OAuthDomain field for internal/Google auth
 	c.JSON(200, gin.H{
 		"issuer":                                fmt.Sprintf("%s://%s", protocol, s.OAuthDomain),
 		"authorization_endpoint":                fmt.Sprintf("%s://%s/authorize", protocol, s.OAuthDomain),
@@ -334,10 +423,20 @@ func (s *Server) oauthProtectedResourceHandler(c *gin.Context) {
 	// ✅ Always point to the canonical resource root (/mcp)
 	resourceURL := fmt.Sprintf("%s://%s", protocol, host)
 
+	// Determine authorization server URL
+	var authServerURL string
+	if s.UseKeycloak && s.KeycloakProvider != nil {
+		// Point to Keycloak's authorization server
+		authServerURL = s.KeycloakProvider.GetBaseURL()
+	} else {
+		// Point to internal authorization server
+		authServerURL = fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)
+	}
+
 	// Return the protected resource metadata
 	c.JSON(200, gin.H{
 		"resource":              resourceURL,
-		"authorization_servers": []string{fmt.Sprintf("%s://%s/", protocol, s.OAuthDomain)},
+		"authorization_servers": []string{authServerURL},
 		"scopes_supported":      s.RequiredScopes,
 		"resource_name":         resourceURL,
 	})
@@ -536,12 +635,17 @@ func (s *Server) callbackHandler(c *gin.Context) {
 		return
 	}
 
-	// Extract email from user info
-	email, ok := userInfo["email"].(string)
-	if !ok {
-		log.Error().Interface("user_info", userInfo).Msg("Email not found in user info")
-		c.JSON(500, gin.H{"error": "server_error"})
-		return
+	// Extract email from user info, fall back to preferred_username
+	email, _ := userInfo["email"].(string)
+	if email == "" {
+		if username, ok := userInfo["preferred_username"].(string); ok && username != "" {
+			email = username
+			log.Warn().Str("preferred_username", username).Msg("Email not found in user info, using preferred_username")
+		} else {
+			log.Error().Interface("user_info", userInfo).Msg("Neither email nor preferred_username found in user info")
+			c.JSON(500, gin.H{"error": "server_error"})
+			return
+		}
 	}
 
 	log.Info().Str("email", email).Msg("User authenticated")
@@ -1828,7 +1932,7 @@ func (s *Server) buildWWWAuthenticateHeader() string {
 	}
 
 	resourceMetadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", protocol, s.OAuthDomain)
-	return fmt.Sprintf("Bearer resource_metadata=\"%%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
+	return fmt.Sprintf("Bearer resource_metadata=\"%s\", scope=\"mcp:read mcp:write\"", resourceMetadataURL)
 }
 
 func normalizeScope(scope string) string {
@@ -1887,8 +1991,37 @@ func (s *Server) authHandler(c *gin.Context) {
 	// Extract token from header or query parameter
 	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
 		token = strings.TrimPrefix(authHeader, "Bearer ")
+		log.Info().
+			Str("source", "header").
+			Str("token_prefix", token[:min(20, len(token))]).
+			Str("token_suffix", token[max(0, len(token)-10):]).
+			Int("token_length", len(token)).
+			Msg("[Auth] Token extracted from Authorization header")
 	} else if tokenParam != "" {
 		token = tokenParam
+		log.Info().
+			Str("source", "query_param").
+			Str("token_prefix", token[:min(20, len(token))]).
+			Str("token_suffix", token[max(0, len(token)-10):]).
+			Int("token_length", len(token)).
+			Msg("[Auth] Token extracted from query parameter")
+	} else if s.EnableEdgeAuth {
+		// Try CF_Authorization cookie (edge auth flow)
+		if cfToken := extractCFAuthCookie(c); cfToken != "" {
+			token = cfToken
+			log.Info().
+				Str("source", "cf_authorization_cookie").
+				Int("token_length", len(token)).
+				Msg("[Auth] Token extracted from CF_Authorization cookie")
+		} else {
+			log.Warn().Msg("Missing authorization token")
+			c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader())
+			c.JSON(401, gin.H{
+				"status":  401,
+				"message": "Unauthorized",
+			})
+			return
+		}
 	} else {
 		// No token provided, return 401 Unauthorized with WWW-Authenticate header
 		log.Warn().Msg("Missing authorization token")
@@ -1900,19 +2033,50 @@ func (s *Server) authHandler(c *gin.Context) {
 		return
 	}
 
-	// Validate the token by checking if it exists in the session store.
-	// This is now an efficient O(1) lookup.
-	sessionData, ok := s.Sessions.GetByToken(token)
+	var sessionData SessionData
+	var ok bool
 
-	if !ok {
-		// Token not found or expired
-		log.Warn().Msg("Invalid or expired token")
-		c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\"")
-		c.JSON(401, gin.H{
-			"status":  401,
-			"message": "Invalid or expired token",
-		})
-		return
+	// If using Keycloak, validate JWT locally (RECOMMENDED - no introspection)
+	if s.UseKeycloak && s.KeycloakProvider != nil {
+		log.Info().Msg("[Auth] Using Keycloak JWT validation (local, no introspection)")
+		tokenInfo, err := s.KeycloakProvider.ValidateJWT(token)
+		if err != nil {
+			log.Warn().Err(err).Msg("Keycloak JWT validation failed")
+			c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\"")
+			c.JSON(401, gin.H{
+				"status":  401,
+				"message": "Invalid or expired token",
+			})
+			return
+		}
+
+		log.Info().
+			Str("email", tokenInfo.Email).
+			Strs("scopes", tokenInfo.Scopes).
+			Int64("expires_at", tokenInfo.ExpiresAt).
+			Msg("[Auth] Keycloak JWT validation successful")
+
+		// Convert token info to session data format
+		sessionData = SessionData{
+			Email:  tokenInfo.Email,
+			Scopes: tokenInfo.Scopes,
+		}
+		ok = true
+	} else {
+		// Validate the token by checking if it exists in the session store.
+		// This is now an efficient O(1) lookup.
+		sessionData, ok = s.Sessions.GetByToken(token)
+
+		if !ok {
+			// Token not found or expired
+			log.Warn().Msg("Invalid or expired token")
+			c.Header("WWW-Authenticate", s.buildWWWAuthenticateHeader()+" error=\"invalid_token\"")
+			c.JSON(401, gin.H{
+				"status":  401,
+				"message": "Invalid or expired token",
+			})
+			return
+		}
 	}
 
 	// Check if the session has the required scopes

@@ -25,13 +25,23 @@ func main() {
 	requiredScopes := flag.String("requiredScopes", "", "Comma-separated list of required OAuth scopes")
 
 	// OAuth provider configuration
-	provider := flag.String("provider", "", "OAuth provider to use (google, internal, etc)")
+	provider := flag.String("provider", "", "OAuth provider to use (google, internal, keycloak, etc)")
 	clientID := flag.String("clientID", "", "OAuth client ID")
 	clientSecret := flag.String("clientSecret", "", "OAuth client secret")
+
+	// Keycloak-specific configuration
+	keycloakAuthHost := flag.String("keycloakAuthHost", "localhost", "Keycloak auth server host")
+	keycloakAuthPort := flag.Int("keycloakAuthPort", 8080, "Keycloak auth server port")
+	keycloakAuthProtocol := flag.String("keycloakAuthProtocol", "https", "Keycloak auth server protocol (http or https)")
+	keycloakRealm := flag.String("keycloakRealm", "master", "Keycloak realm")
 
 	// Database and internal auth configuration
 	dataDir := flag.String("dataDir", "./data", "Directory for database and other data files")
 	useInternalAuth := flag.Bool("useInternalAuth", false, "Use internal authentication instead of external provider")
+
+	// Edge auth (CF_Authorization cookie flow)
+	enableEdgeAuth := flag.Bool("enableEdgeAuth", false, "Enable edge auth endpoints (/auth/connect, /_ws_tunnel) for CF_Authorization cookie flow")
+	cookieDomain := flag.String("cookieDomain", "", "Domain for CF_Authorization cookie (defaults to oauthDomain)")
 
 	// Default admin user (only used if no users exist and internal auth is enabled)
 	adminUsername := flag.String("adminUsername", "admin", "Default admin username")
@@ -76,6 +86,30 @@ func main() {
 		*requiredScopes = envRequiredScopes
 	}
 
+	// Check environment variables for Keycloak configuration
+	if envAuthHost := os.Getenv("KEYCLOAK_AUTH_HOST"); envAuthHost != "" {
+		*keycloakAuthHost = envAuthHost
+	}
+	if envAuthPort := os.Getenv("KEYCLOAK_AUTH_PORT"); envAuthPort != "" {
+		if port, err := strconv.Atoi(envAuthPort); err == nil {
+			*keycloakAuthPort = port
+		}
+	}
+	if envAuthProtocol := os.Getenv("KEYCLOAK_AUTH_PROTOCOL"); envAuthProtocol != "" {
+		*keycloakAuthProtocol = envAuthProtocol
+	}
+	if envRealm := os.Getenv("KEYCLOAK_REALM"); envRealm != "" {
+		*keycloakRealm = envRealm
+	}
+
+	// Check environment variables for edge auth configuration
+	if envEdgeAuth := os.Getenv("ENABLE_EDGE_AUTH"); envEdgeAuth != "" {
+		*enableEdgeAuth = strings.ToLower(envEdgeAuth) == "true"
+	}
+	if envCookieDomain := os.Getenv("COOKIE_DOMAIN"); envCookieDomain != "" {
+		*cookieDomain = envCookieDomain
+	}
+
 	// Configure logging based on log level
 	configureLogging(*logLevel)
 
@@ -92,6 +126,14 @@ func main() {
 	s, err := server.NewServer(*oauthDomain, *devMode, *dataDir)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create server")
+	}
+
+	// Configure edge auth
+	s.EnableEdgeAuth = *enableEdgeAuth
+	if *cookieDomain != "" {
+		s.CookieDomain = *cookieDomain
+	} else {
+		s.CookieDomain = *oauthDomain
 	}
 
 	// Configure allowed emails if provided
@@ -169,6 +211,35 @@ func main() {
 		}
 
 		log.Info().Msg("Configured internal authentication provider")
+	} else if actualProvider == "keycloak" {
+		// Keycloak provider
+		if actualClientID == "" || actualClientSecret == "" {
+			log.Fatal().
+				Str("provider", actualProvider).
+				Msg("ClientID and ClientSecret must be set for Keycloak")
+		}
+
+		if err := s.ConfigureKeycloakProvider(
+			actualClientID,
+			actualClientSecret,
+			redirectURI,
+			nil, // scopes - will use defaults
+			*keycloakAuthHost,
+			*keycloakAuthPort,
+			*keycloakAuthProtocol,
+			*keycloakRealm,
+		); err != nil {
+			log.Fatal().Err(err).Msg("Failed to configure Keycloak provider")
+		}
+
+		log.Info().
+			Str("provider", actualProvider).
+			Str("redirectURI", redirectURI).
+			Str("auth_host", *keycloakAuthHost).
+			Int("auth_port", *keycloakAuthPort).
+			Str("auth_protocol", *keycloakAuthProtocol).
+			Str("realm", *keycloakRealm).
+			Msg("Configured Keycloak OAuth provider")
 	} else {
 		// External provider (default: google)
 		if actualClientID == "" || actualClientSecret == "" {
@@ -186,6 +257,9 @@ func main() {
 			Str("redirectURI", redirectURI).
 			Msg("Configured OAuth provider")
 	}
+
+	// Register edge auth routes (must happen after EnableEdgeAuth is set)
+	s.SetupEdgeAuthRoutes()
 
 	// Start the server
 	address := fmt.Sprintf(":%d", *port)
