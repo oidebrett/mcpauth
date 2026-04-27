@@ -548,6 +548,62 @@ curl -i -H "Authorization: Bearer TOKEN_FROM_UNAUTHORIZED_USER" http://localhost
 
 ---
 
+## Static Bearer Token (For Third-Party Testing)
+
+When you need to give a third party a simple token to test their MCP client integration — without going through the full OAuth flow — you can set a static bearer token via the `AUTHORIZATION_BEARER_TOKEN` environment variable.
+
+When this variable is set, any request that presents it as a `Bearer` token will be immediately granted access (returning `200 OK` with `X-Forwarded-User: static-authorized-user`). Requests with any other token fall through to the normal OAuth/session validation as usual. If the variable is unset or empty, the feature is completely disabled.
+
+This is intended for **short-lived testing only** — not as a permanent auth mechanism.
+
+### .env
+
+Add the token to your `.env` file alongside your other secrets:
+
+```env
+AUTHORIZATION_BEARER_TOKEN=your-secret-token-here
+```
+
+### Docker Compose
+
+```yaml
+mcpauth:
+  image: oideibrett/mcpauth:latest
+  volumes:
+    - ./config/data:/app/data
+  environment:
+    - ENABLE_EDGE_AUTH=true
+    - COOKIE_DOMAIN=.yourdomain.com  # leading dot for subdomains
+    - PORT=11000
+    - PROVIDER=keycloak
+    - CLIENT_ID=${CLIENT_ID}
+    - CLIENT_SECRET=${CLIENT_SECRET}
+    - OAUTH_DOMAIN=${OAUTH_DOMAIN:-oauth.yourdomain.com}
+    - KEYCLOAK_AUTH_HOST=keycloak.yourdomain.com
+    - KEYCLOAK_AUTH_PORT=443
+    - KEYCLOAK_AUTH_PROTOCOL=https
+    - KEYCLOAK_REALM=master
+    - ALLOWED_SCOPES=openid,email,profile
+    - AUTHORIZATION_BEARER_TOKEN=${AUTHORIZATION_BEARER_TOKEN}
+    #- REQUIRED_SCOPES=openid,email
+    - REQUIRED_SCOPES=email
+  restart: unless-stopped
+  ports:
+    - "127.0.0.1:11000:11000"
+```
+
+### Testing with curl
+
+```bash
+# Should return 200 OK
+curl -i -H "Authorization: Bearer your-secret-token-here" http://localhost:11000/auth
+
+# Wrong token — falls through to OAuth validation, returns 401
+curl -i -H "Authorization: Bearer wrongtoken" http://localhost:11000/auth
+```
+
+---
+
 
 ## Middleware Chain (Traefik)
 
