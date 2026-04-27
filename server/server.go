@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"os"
 	"net/url"
 	"strconv"
 	"strings"
@@ -2030,6 +2031,14 @@ func (s *Server) authHandler(c *gin.Context) {
 			"status":  401,
 			"message": "Unauthorized",
 		})
+		return
+	}
+
+	// Static bearer token check — bypasses OAuth when AUTHORIZATION_BEARER_TOKEN is set
+	if staticToken := os.Getenv("AUTHORIZATION_BEARER_TOKEN"); staticToken != "" && token == staticToken {
+		log.Info().Msg("[Auth] Static bearer token authentication successful")
+		c.Header("X-Forwarded-User", "static-authorized-user")
+		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte("You're authenticated as 'static-authorized-user'"))
 		return
 	}
 
