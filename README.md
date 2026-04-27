@@ -270,6 +270,14 @@ services:
       - "8080:8080"
 ```
 
+Note: langwatch image is image: oideibrett/mcpauth:langwatch and you will need to include these in the docker compose
+
+```bash
+    environment:
+      - LANGWATCH_API_KEY=${LANGWATCH_API_KEY}
+      - LANGWATCH_ENDPOINT=${LANGWATCH_ENDPOINT}
+```
+
 #### Testing Your Keycloak Setup
 
 ##### 1. Verify Metadata Endpoints
