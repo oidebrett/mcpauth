@@ -202,6 +202,33 @@ func (r *ClientRepository) CreateClientWithID(clientID, clientName string, redir
 	return r.GetClientByID(clientID)
 }
 
+// CreateClientWithIDAndSecret creates a new OAuth client with a specific client ID and client secret.
+func (r *ClientRepository) CreateClientWithIDAndSecret(clientID, clientSecret, clientName string, redirectURIs []string, scopes []string) (*OAuthClient, error) {
+	redirectURIsJSON, err := json.Marshal(redirectURIs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal redirect URIs: %w", err)
+	}
+
+	scopesJSON, err := json.Marshal(scopes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal scopes: %w", err)
+	}
+
+	// Delete existing client to enable updating clientSecret or redirectURIs
+	_, _ = r.db.Exec("DELETE FROM oauth_clients WHERE client_id = ?", clientID)
+
+	query := `
+		INSERT INTO oauth_clients (client_id, client_secret, client_name, redirect_uris, scopes)
+		VALUES (?, ?, ?, ?, ?)
+	`
+	_, err = r.db.Exec(query, clientID, clientSecret, clientName, string(redirectURIsJSON), string(scopesJSON))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create client: %w", err)
+	}
+
+	return r.GetClientByID(clientID)
+}
+
 // GetClientByID retrieves a client by client ID
 func (r *ClientRepository) GetClientByID(clientID string) (*OAuthClient, error) {
 	client := &OAuthClient{}

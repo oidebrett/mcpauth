@@ -320,9 +320,9 @@ func (s *Server) SetupEdgeAuthRoutes() {
 	s.Router.GET("/auth/connect/callback", s.edgeAuthConnectCallbackHandler)
 	s.Router.Any("/_ws_tunnel", s.edgeAuthWsTunnelHandler)
 
-	// Register edge-auth client for internal auth redirect URI validation
-	if err := s.registerEdgeAuthClient(); err != nil {
-		log.Warn().Err(err).Msg("Failed to register edge auth client")
+	// Bootstrap any pre-configured OAuth clients passed via environment variable
+	if err := s.bootstrapClients(); err != nil {
+		log.Warn().Err(err).Msg("Failed to bootstrap pre-configured OAuth clients")
 	}
 	log.Info().Msg("Edge auth endpoints enabled: /auth/connect, /_ws_tunnel")
 }

@@ -1,8 +1,10 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -205,38 +207,63 @@ func extractCFAuthCookie(c *gin.Context) string {
 	return cfToken
 }
 
-// registerEdgeAuthClient registers the edge-auth OAuth client in both the
-// in-memory map and the database so internal auth's redirect URI validation succeeds.
-func (s *Server) registerEdgeAuthClient() error {
-	protocol := "https"
-	if s.DevMode {
-		protocol = "http"
-	}
-	redirectURI := fmt.Sprintf("%s://%s/auth/connect/callback", protocol, s.OAuthDomain)
 
-	// Register in the in-memory client map (used by external provider flow)
-	s.Clients[edgeAuthClientID] = Client{
-		ClientID:     edgeAuthClientID,
-		ClientName:   "Edge Auth Connect",
-		RedirectURIs: []string{redirectURI},
+
+// BootstrapClient represents the JSON format for configuring static clients at startup.
+type BootstrapClient struct {
+	ClientID     string   `json:"client_id"`
+	ClientSecret string   `json:"client_secret"`
+	ClientName   string   `json:"client_name"`
+	RedirectURIs []string `json:"redirect_uris"`
+	Scopes       []string `json:"scopes"`
+}
+
+// bootstrapClients registers OAuth clients defined dynamically in the
+// MCPAUTH_BOOTSTRAP_CLIENTS environment variable on startup.
+func (s *Server) bootstrapClients() error {
+	rawClientsJSON := os.Getenv("MCPAUTH_BOOTSTRAP_CLIENTS")
+	if rawClientsJSON == "" {
+		return nil
 	}
 
-	// Register in the database if internal auth is enabled (for redirect URI validation)
-	if s.UseInternalAuth && s.ClientService != nil {
-		_, err := s.ClientService.GetClient(edgeAuthClientID)
-		if err != nil {
-			// Client doesn't exist in DB — create it
-			_, err = s.ClientService.CreateEdgeAuthClient(edgeAuthClientID, []string{redirectURI}, []string{"openid", "email"})
-			if err != nil {
-				return fmt.Errorf("failed to register edge auth client in database: %w", err)
+	var clients []BootstrapClient
+	if err := json.Unmarshal([]byte(rawClientsJSON), &clients); err != nil {
+		log.Error().Err(err).Msg("[MCPAuth] Failed to parse MCPAUTH_BOOTSTRAP_CLIENTS JSON")
+		return err
+	}
+
+	for _, bc := range clients {
+		if bc.ClientID == "" || bc.ClientSecret == "" || len(bc.RedirectURIs) == 0 {
+			log.Warn().Interface("client", bc).Msg("[MCPAuth] Skipping invalid bootstrap client configuration")
+			continue
+		}
+
+		// Register in the in-memory client map
+		s.Clients[bc.ClientID] = Client{
+			ClientID:     bc.ClientID,
+			ClientName:   bc.ClientName,
+			RedirectURIs: bc.RedirectURIs,
+		}
+
+		if s.UseInternalAuth && s.ClientService != nil {
+			scopes := bc.Scopes
+			if len(scopes) == 0 {
+				scopes = []string{"openid", "email", "profile"}
 			}
-			log.Info().Str("redirect_uri", redirectURI).Msg("[EdgeAuth] Registered edge auth client in database")
-		} else {
-			log.Info().Msg("[EdgeAuth] Edge auth client already exists in database")
+			_, err := s.ClientService.CreateClientWithIDAndSecret(
+				bc.ClientID,
+				bc.ClientSecret,
+				bc.ClientName,
+				bc.RedirectURIs,
+				scopes,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to register bootstrap client %s: %w", bc.ClientID, err)
+			}
+			log.Info().Str("client_id", bc.ClientID).Msg("[MCPAuth] Successfully registered bootstrap client in database")
 		}
 	}
 
-	log.Info().Str("redirect_uri", redirectURI).Msg("[EdgeAuth] Registered edge auth client")
 	return nil
 }
 
